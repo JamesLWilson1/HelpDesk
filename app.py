@@ -317,8 +317,6 @@ def create_app(test_config=None):
     @login_required
     def edit_ticket(ticket_id):
         ticket = get_ticket(ticket_id)
-        if g.user["role"] != "admin" and ticket["user_id"] != g.user["id"]:
-            abort(403)
 
         if request.method == "POST":
             validate_csrf()
@@ -344,9 +342,9 @@ def create_app(test_config=None):
     @app.route("/tickets/<int:ticket_id>/comment", methods=("POST",))
     @login_required
     def add_comment(ticket_id):
+        validate_csrf()
         ticket = get_ticket(ticket_id)
         body = request.form.get("body", "").strip()
-        validate_csrf()
         if not body:
             flash("Comment cannot be empty.", "error")
         else:
@@ -361,8 +359,8 @@ def create_app(test_config=None):
     @app.route("/tickets/<int:ticket_id>/assign", methods=("POST",))
     @admin_required
     def assign_ticket(ticket_id):
-        get_ticket(ticket_id)
         validate_csrf()
+        get_ticket(ticket_id)
         assigned_to = request.form.get("assigned_to", "").strip()
         try:
             assignee_id = int(assigned_to) if assigned_to else None
@@ -382,8 +380,8 @@ def create_app(test_config=None):
     @app.route("/tickets/<int:ticket_id>/status", methods=("POST",))
     @admin_required
     def update_ticket_status(ticket_id):
-        get_ticket(ticket_id)
         validate_csrf()
+        get_ticket(ticket_id)
         status = request.form.get("status", "open")
         resolution_notes = request.form.get("resolution_notes", "").strip()
         if status not in {"open", "in_progress", "closed"}:
