@@ -1,10 +1,17 @@
 import os
+import re
 import secrets
 import sqlite3
 from functools import wraps
 
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,50}$")
+MAX_TITLE_LENGTH = 120
+MAX_CATEGORY_LENGTH = 60
+MAX_DESCRIPTION_LENGTH = 2000
+MAX_COMMENT_LENGTH = 1000
 
 
 def create_app(test_config=None):
@@ -88,10 +95,28 @@ def create_app(test_config=None):
         session["_csrf_token"] = session.get("_csrf_token") or secrets.token_hex(16)
         return session["_csrf_token"]
 
+    def rotate_csrf_token():
+        session["_csrf_token"] = secrets.token_hex(16)
+        return session["_csrf_token"]
+
     def validate_csrf():
         token = request.form.get("csrf_token", "")
         if not token or token != session.get("_csrf_token"):
             abort(400, "Invalid CSRF token.")
+
+    def escape_like(term):
+        return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+    def validate_ticket_fields(title, description, category):
+        if not title or not description or not category:
+            return "Title, description, and category are required."
+        if len(title) > MAX_TITLE_LENGTH:
+            return f"Title must be {MAX_TITLE_LENGTH} characters or fewer."
+        if len(category) > MAX_CATEGORY_LENGTH:
+            return f"Category must be {MAX_CATEGORY_LENGTH} characters or fewer."
+        if len(description) > MAX_DESCRIPTION_LENGTH:
+            return f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."
+        return None
 
     def load_logged_in_user():
         user_id = session.get("user_id")
@@ -151,7 +176,9 @@ def create_app(test_config=None):
 
     @app.route("/")
     def index():
-        return redirect(url_for("dashboard" if session.get("user_id") else "login"))
+        if g.user:
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("login"))
 
     @app.route("/register", methods=("GET", "POST"))
     def register():
@@ -161,6 +188,8 @@ def create_app(test_config=None):
             password = request.form.get("password", "")
             if not username or not password:
                 flash("Username and password are required.", "error")
+            elif not USERNAME_PATTERN.fullmatch(username):
+                flash("Username must be 3-50 characters and use only letters, numbers, dots, dashes, or underscores.", "error")
             elif query_one("SELECT id FROM users WHERE username = ?", (username,)):
                 flash("Username already exists.", "error")
             else:
@@ -170,6 +199,7 @@ def create_app(test_config=None):
                     "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
                     (username, generate_password_hash(password), role),
                 )
+                rotate_csrf_token()
                 flash(f"Account created. You can now log in as {username}.", "success")
                 return redirect(url_for("login"))
         return render_template("register.html")
@@ -186,7 +216,7 @@ def create_app(test_config=None):
             else:
                 session.clear()
                 session["user_id"] = user["id"]
-                new_csrf_token()
+                rotate_csrf_token()
                 return redirect(url_for("dashboard"))
         return render_template("login.html")
 
@@ -231,8 +261,10 @@ def create_app(test_config=None):
             filters.append("tickets.status = ?")
             params.append(status)
         if search:
-            filters.append("(tickets.title LIKE ? OR tickets.description LIKE ? OR tickets.category LIKE ?)")
-            wildcard = f"%{search}%"
+            filters.append(
+                "(tickets.title LIKE ? ESCAPE '\\' OR tickets.description LIKE ? ESCAPE '\\' OR tickets.category LIKE ? ESCAPE '\\')"
+            )
+            wildcard = f"%{escape_like(search)}%"
             params.extend([wildcard, wildcard, wildcard])
 
         if filters:
@@ -282,8 +314,9 @@ def create_app(test_config=None):
             description = request.form.get("description", "").strip()
             category = request.form.get("category", "").strip()
             priority = request.form.get("priority", "medium")
-            if not title or not description or not category:
-                flash("Title, description, and category are required.", "error")
+            error = validate_ticket_fields(title, description, category)
+            if error:
+                flash(error, "error")
             else:
                 cursor = execute(
                     """
@@ -324,8 +357,9 @@ def create_app(test_config=None):
             description = request.form.get("description", "").strip()
             category = request.form.get("category", "").strip()
             priority = request.form.get("priority", "medium")
-            if not title or not description or not category:
-                flash("Title, description, and category are required.", "error")
+            error = validate_ticket_fields(title, description, category)
+            if error:
+                flash(error, "error")
             else:
                 execute(
                     """
@@ -347,6 +381,8 @@ def create_app(test_config=None):
         body = request.form.get("body", "").strip()
         if not body:
             flash("Comment cannot be empty.", "error")
+        elif len(body) > MAX_COMMENT_LENGTH:
+            flash(f"Comment must be {MAX_COMMENT_LENGTH} characters or fewer.", "error")
         else:
             execute(
                 "INSERT INTO comments (ticket_id, user_id, body) VALUES (?, ?, ?)",

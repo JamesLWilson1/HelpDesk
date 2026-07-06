@@ -62,7 +62,7 @@
   <form method="post" action="{{ url_for('add_comment', ticket_id=ticket['id']) }}" class="stack">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Add comment
-      <textarea name="body" rows="4" required></textarea>
+      <textarea name="body" rows="4" maxlength="1000" required></textarea>
     </label>
     <button type="submit">Post comment</button>
   </form>

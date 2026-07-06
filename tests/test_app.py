@@ -27,17 +27,17 @@ class HelpDeskAppTests(unittest.TestCase):
         with self.client.session_transaction() as session:
             return session["_csrf_token"]
 
-    def post(self, path, data, follow_redirects=True):
-        token = self.csrf_token(path if path in {"/login", "/register", "/tickets/new"} else "/dashboard")
+    def post(self, path, data, follow_redirects=True, csrf_path=None):
+        token = self.csrf_token(csrf_path or path)
         payload = dict(data)
         payload["csrf_token"] = token
         return self.client.post(path, data=payload, follow_redirects=follow_redirects)
 
     def register(self, username, secret="secret123"):
-        return self.post("/register", {"username": username, "password": secret})
+        return self.post("/register", {"username": username, "password": secret}, csrf_path="/register")
 
     def login(self, username, secret="secret123"):
-        return self.post("/login", {"username": username, "password": secret})
+        return self.post("/login", {"username": username, "password": secret}, csrf_path="/login")
 
     def create_ticket(self, title="Printer issue"):
         return self.post(
@@ -48,6 +48,7 @@ class HelpDeskAppTests(unittest.TestCase):
                 "category": "Hardware",
                 "priority": "high",
             },
+            csrf_path="/tickets/new",
         )
 
     def dashboard_csrf(self):
@@ -100,7 +101,7 @@ class HelpDeskAppTests(unittest.TestCase):
         self.register("normal-user")
         self.login("normal-user")
         self.create_ticket("VPN access")
-        self.post("/logout", {})
+        self.post("/logout", {}, csrf_path="/dashboard")
 
         self.login("admin-user")
         response = self.client.get("/dashboard?status=open&search=VPN")
