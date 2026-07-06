@@ -8,6 +8,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>Username <input type="text" name="username" required></label>
     <label>Password <input type="password" name="password" required></label>
+    <label>Email (optional — used for ticket notifications) <input type="email" name="email" autocomplete="email"></label>
     <button type="submit">Register</button>
   </form>
   <p>Already registered? <a href="{{ url_for('login') }}">Sign in</a>.</p>

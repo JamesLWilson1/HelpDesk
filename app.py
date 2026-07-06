@@ -2,10 +2,15 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from functools import wraps
 
+from dotenv import load_dotenv
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask_mail import Mail, Message
 from werkzeug.security import check_password_hash, generate_password_hash
+
+load_dotenv()
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,50}$")
 MAX_TITLE_LENGTH = 120
@@ -19,11 +24,18 @@ def create_app(test_config=None):
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("SECRET_KEY", secrets.token_hex(32)),
         DATABASE=os.path.join(app.instance_path, "helpdesk.sqlite"),
+        MAIL_SERVER=os.environ.get("MAIL_SERVER", "localhost"),
+        MAIL_PORT=int(os.environ.get("MAIL_PORT", "587")),
+        MAIL_USE_TLS=os.environ.get("MAIL_USE_TLS", "true").lower() == "true",
+        MAIL_USERNAME=os.environ.get("MAIL_USERNAME"),
+        MAIL_PASSWORD=os.environ.get("MAIL_PASSWORD"),
+        MAIL_DEFAULT_SENDER=os.environ.get("MAIL_DEFAULT_SENDER"),
     )
 
     if test_config is not None:
         app.config.update(test_config)
 
+    mail = Mail(app)
     os.makedirs(app.instance_path, exist_ok=True)
 
     def get_db():
@@ -46,6 +58,7 @@ def create_app(test_config=None):
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+                email TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -77,6 +90,12 @@ def create_app(test_config=None):
             """
         )
         db.commit()
+        # Migrate: add email column to existing databases
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
         db.close()
 
     def query_one(query, params=()):
@@ -117,6 +136,22 @@ def create_app(test_config=None):
         if len(description) > MAX_DESCRIPTION_LENGTH:
             return f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."
         return None
+
+    def send_notification(subject, recipients, body):
+        """Send an email in a background thread. No-ops if MAIL_DEFAULT_SENDER is not configured."""
+        filtered = [r for r in recipients if r]
+        if not app.config.get("MAIL_DEFAULT_SENDER") or not filtered:
+            return
+
+        def _send():
+            with app.app_context():
+                try:
+                    msg = Message(subject, recipients=filtered, body=body)
+                    mail.send(msg)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_send, daemon=True).start()
 
     def load_logged_in_user():
         user_id = session.get("user_id")
@@ -186,6 +221,7 @@ def create_app(test_config=None):
             validate_csrf()
             username = request.form.get("username", "").strip()
             password = request.form.get("password", "")
+            email = request.form.get("email", "").strip()
             if not username or not password:
                 flash("Username and password are required.", "error")
             elif not USERNAME_PATTERN.fullmatch(username):
@@ -196,8 +232,8 @@ def create_app(test_config=None):
                 has_admin = query_one("SELECT id FROM users WHERE role = 'admin'")
                 role = "user" if has_admin else "admin"
                 execute(
-                    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                    (username, generate_password_hash(password), role),
+                    "INSERT INTO users (username, password_hash, role, email) VALUES (?, ?, ?, ?)",
+                    (username, generate_password_hash(password), role, email),
                 )
                 rotate_csrf_token()
                 flash(f"Account created. You can now log in as {username}.", "success")
@@ -325,8 +361,21 @@ def create_app(test_config=None):
                     """,
                     (title, description, category, priority, g.user["id"]),
                 )
+                new_ticket_id = cursor.lastrowid
+                admin_emails = [
+                    row["email"] for row in
+                    query_all("SELECT email FROM users WHERE role = 'admin' AND email != ''")
+                ]
+                ticket_url = url_for("ticket_detail", ticket_id=new_ticket_id, _external=True)
+                send_notification(
+                    f"[HelpDesk] New ticket #{new_ticket_id}: {title}",
+                    admin_emails,
+                    f"A new ticket has been submitted by {g.user['username']}.\n\n"
+                    f"Title: {title}\nCategory: {category}\nPriority: {priority}\n\n"
+                    f"View ticket: {ticket_url}",
+                )
                 flash("Ticket created successfully.", "success")
-                return redirect(url_for("ticket_detail", ticket_id=cursor.lastrowid))
+                return redirect(url_for("ticket_detail", ticket_id=new_ticket_id))
         return render_template("ticket_form.html", ticket=None)
 
     @app.route("/tickets/<int:ticket_id>")
@@ -389,6 +438,26 @@ def create_app(test_config=None):
                 (ticket["id"], g.user["id"], body),
             )
             execute("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (ticket_id,))
+            comment_recipients = []
+            if ticket["user_id"] != g.user["id"]:
+                owner = query_one("SELECT email FROM users WHERE id = ?", (ticket["user_id"],))
+                if owner and owner["email"]:
+                    comment_recipients.append(owner["email"])
+            if (
+                ticket["assigned_to"]
+                and ticket["assigned_to"] != g.user["id"]
+                and ticket["assigned_to"] != ticket["user_id"]
+            ):
+                assignee = query_one("SELECT email FROM users WHERE id = ?", (ticket["assigned_to"],))
+                if assignee and assignee["email"]:
+                    comment_recipients.append(assignee["email"])
+            comment_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
+            send_notification(
+                f"[HelpDesk] New comment on ticket #{ticket_id}: {ticket['title']}",
+                comment_recipients,
+                f"{g.user['username']} added a comment on ticket #{ticket_id}: {ticket['title']}\n\n"
+                f"{body}\n\nView ticket: {comment_url}",
+            )
             flash("Comment added.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
@@ -396,20 +465,30 @@ def create_app(test_config=None):
     @admin_required
     def assign_ticket(ticket_id):
         validate_csrf()
-        get_ticket(ticket_id)
+        ticket = get_ticket(ticket_id)
         assigned_to = request.form.get("assigned_to", "").strip()
         try:
             assignee_id = int(assigned_to) if assigned_to else None
         except ValueError:
             abort(400)
         if assignee_id is not None:
-            assignee = query_one("SELECT id FROM users WHERE id = ? AND role = 'admin'", (assignee_id,))
+            assignee = query_one("SELECT id, email FROM users WHERE id = ? AND role = 'admin'", (assignee_id,))
             if assignee is None:
                 abort(400)
+        else:
+            assignee = None
         execute(
             "UPDATE tickets SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (assignee_id, ticket_id),
         )
+        if assignee and assignee["email"]:
+            assign_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
+            send_notification(
+                f"[HelpDesk] Ticket #{ticket_id} assigned to you",
+                [assignee["email"]],
+                f"Ticket #{ticket_id}: {ticket['title']} has been assigned to you by {g.user['username']}.\n\n"
+                f"View ticket: {assign_url}",
+            )
         flash("Ticket assignment updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
@@ -417,7 +496,7 @@ def create_app(test_config=None):
     @admin_required
     def update_ticket_status(ticket_id):
         validate_csrf()
-        get_ticket(ticket_id)
+        ticket = get_ticket(ticket_id)
         status = request.form.get("status", "open")
         resolution_notes = request.form.get("resolution_notes", "").strip()
         if status not in {"open", "in_progress", "closed"}:
@@ -430,6 +509,17 @@ def create_app(test_config=None):
             """,
             (status, resolution_notes, ticket_id),
         )
+        owner = query_one("SELECT email FROM users WHERE id = ?", (ticket["user_id"],))
+        if owner and owner["email"]:
+            status_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
+            send_notification(
+                f"[HelpDesk] Ticket #{ticket_id} status updated: {status}",
+                [owner["email"]],
+                f"Your ticket #{ticket_id}: {ticket['title']} has been updated.\n\n"
+                f"New status: {status}\n"
+                + (f"Resolution notes: {resolution_notes}\n" if resolution_notes else "")
+                + f"\nView ticket: {status_url}",
+            )
         flash("Ticket status updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
