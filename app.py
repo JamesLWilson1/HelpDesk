@@ -133,9 +133,10 @@ def create_app(test_config=None):
             abort(403)
         return ticket
 
+    init_db()
+
     @app.before_request
     def before_request():
-        init_db()
         load_logged_in_user()
         if request.method == "GET":
             new_csrf_token()
@@ -405,4 +406,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=os.environ.get("FLASK_DEBUG") == "1")

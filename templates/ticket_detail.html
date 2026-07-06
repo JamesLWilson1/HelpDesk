@@ -48,7 +48,7 @@
           <option value="in_progress" {% if ticket["status"] == "in_progress" %}selected{% endif %}>In Progress</option>
           <option value="closed" {% if ticket["status"] == "closed" %}selected{% endif %}>Closed</option>
         </select>
-        <label>Resolution notes
+        <label>Resolution notes{% if ticket["resolution_notes"] %} (edit existing notes as needed){% endif %}
           <textarea name="resolution_notes" rows="5">{{ ticket["resolution_notes"] }}</textarea>
         </label>
         <button type="submit">Update status</button>
