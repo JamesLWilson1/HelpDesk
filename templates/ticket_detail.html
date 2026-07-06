@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Ticket #{{ ticket["id"] }} - HelpDesk{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="ticket-header">
+    <div>
+      <h2>{{ ticket["title"] }}</h2>
+      <p class="meta">
+        Owner: {{ ticket["owner_username"] }} · Category: {{ ticket["category"] }} · Priority: {{ ticket["priority"] }} · Status: {{ ticket["status"] }}
+        {% if ticket["assignee_username"] %} · Assigned to: {{ ticket["assignee_username"] }}{% endif %}
+      </p>
+    </div>
+    <a class="button-link" href="{{ url_for('edit_ticket', ticket_id=ticket['id']) }}">Edit ticket</a>
+  </div>
+
+  <p>{{ ticket["description"] }}</p>
+
+  {% if ticket["resolution_notes"] %}
+    <div class="resolution">
+      <h3>Resolution notes</h3>
+      <p>{{ ticket["resolution_notes"] }}</p>
+    </div>
+  {% endif %}
+</section>
+
+{% if g.user["role"] == "admin" %}
+  <section class="grid-two">
+    <section class="card">
+      <h3>Assignment</h3>
+      <form method="post" action="{{ url_for('assign_ticket', ticket_id=ticket['id']) }}" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="assigned_to">
+          <option value="">Unassigned</option>
+          {% for admin in admins %}
+            <option value="{{ admin['id'] }}" {% if ticket["assigned_to"] == admin["id"] %}selected{% endif %}>{{ admin["username"] }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">Save assignment</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h3>Status</h3>
+      <form method="post" action="{{ url_for('update_ticket_status', ticket_id=ticket['id']) }}" class="stack">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <select name="status">
+          <option value="open" {% if ticket["status"] == "open" %}selected{% endif %}>Open</option>
+          <option value="in_progress" {% if ticket["status"] == "in_progress" %}selected{% endif %}>In Progress</option>
+          <option value="closed" {% if ticket["status"] == "closed" %}selected{% endif %}>Closed</option>
+        </select>
+        <label>Resolution notes
+          <textarea name="resolution_notes" rows="5">{{ ticket["resolution_notes"] }}</textarea>
+        </label>
+        <button type="submit">Update status</button>
+      </form>
+    </section>
+  </section>
+{% endif %}
+
+<section class="card">
+  <h3>Comments</h3>
+  <form method="post" action="{{ url_for('add_comment', ticket_id=ticket['id']) }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Add comment
+      <textarea name="body" rows="4" required></textarea>
+    </label>
+    <button type="submit">Post comment</button>
+  </form>
+
+  {% if comments %}
+    <ul class="comments">
+      {% for comment in comments %}
+        <li>
+          <strong>{{ comment["username"] }}</strong>
+          <span class="meta">{{ comment["created_at"] }}</span>
+          <p>{{ comment["body"] }}</p>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No comments yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

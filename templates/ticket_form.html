@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit ticket" if ticket else "Create ticket" }} - HelpDesk{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>{{ "Edit ticket" if ticket else "Create ticket" }}</h2>
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Title <input type="text" name="title" value="{{ ticket['title'] if ticket else '' }}" required></label>
+    <label>Category <input type="text" name="category" value="{{ ticket['category'] if ticket else '' }}" required></label>
+    <label>Priority
+      <select name="priority">
+        {% for value in ["low", "medium", "high"] %}
+          <option value="{{ value }}" {% if (ticket and ticket["priority"] == value) or (not ticket and value == "medium") %}selected{% endif %}>{{ value|capitalize }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Description
+      <textarea name="description" rows="8" required>{{ ticket['description'] if ticket else '' }}</textarea>
+    </label>
+    <button type="submit">{{ "Save changes" if ticket else "Create ticket" }}</button>
+  </form>
+</section>
+{% endblock %}
