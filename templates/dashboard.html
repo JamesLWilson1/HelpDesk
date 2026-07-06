@@ -21,7 +21,23 @@
         <option value="closed" {% if status == "closed" %}selected{% endif %}>Closed</option>
       </select>
     </label>
-    <label>Search <input type="search" name="search" value="{{ search }}" placeholder="title, description, category"></label>
+    <label>Priority
+      <select name="priority">
+        <option value="">All</option>
+        <option value="low" {% if priority == "low" %}selected{% endif %}>Low</option>
+        <option value="medium" {% if priority == "medium" %}selected{% endif %}>Medium</option>
+        <option value="high" {% if priority == "high" %}selected{% endif %}>High</option>
+      </select>
+    </label>
+    <label>Category
+      <select name="category">
+        <option value="">All</option>
+        {% for cat in categories %}
+          <option value="{{ cat }}" {% if category == cat %}selected{% endif %}>{{ cat }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Search <input type="search" name="search" value="{{ search }}" placeholder="title, description"></label>
     <button type="submit">Apply</button>
   </form>
 
@@ -59,13 +75,13 @@
     {% if total_pages > 1 %}
       <nav class="pagination">
         {% if page > 1 %}
-          <a href="{{ url_for('dashboard', page=page-1, status=status, search=search) }}">&larr; Previous</a>
+          <a href="{{ url_for('dashboard', page=page-1, status=status, priority=priority, category=category, search=search) }}">&larr; Previous</a>
         {% else %}
           <span class="pagination-disabled">&larr; Previous</span>
         {% endif %}
         <span>Page {{ page }} of {{ total_pages }} &middot; {{ total }} ticket{{ 's' if total != 1 }}</span>
         {% if page < total_pages %}
-          <a href="{{ url_for('dashboard', page=page+1, status=status, search=search) }}">Next &rarr;</a>
+          <a href="{{ url_for('dashboard', page=page+1, status=status, priority=priority, category=category, search=search) }}">Next &rarr;</a>
         {% else %}
           <span class="pagination-disabled">Next &rarr;</span>
         {% endif %}

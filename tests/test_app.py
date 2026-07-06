@@ -361,5 +361,68 @@ class HelpDeskAppTests(unittest.TestCase):
             app_module.PER_PAGE = original
 
 
+    # --- User profile ---
+
+    def test_user_can_update_email(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/profile")
+        response = self.client.post(
+            "/profile/email",
+            data={"csrf_token": token, "email": "admin@example.com"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Email updated", response.data)
+        self.assertIn(b"admin@example.com", response.data)
+
+    def test_user_can_change_password(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/profile")
+        response = self.client.post(
+            "/profile/password",
+            data={"csrf_token": token, "current_password": "secret123", "new_password": "newpass456"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Password updated", response.data)
+        self.post("/logout", {}, csrf_path="/dashboard")
+        response = self.login("admin-user", secret="newpass456")
+        self.assertIn(b"All tickets", response.data)
+
+    def test_change_password_rejects_wrong_current_password(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/profile")
+        response = self.client.post(
+            "/profile/password",
+            data={"csrf_token": token, "current_password": "wrongpass", "new_password": "newpass456"},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Current password is incorrect", response.data)
+
+    # --- Priority / category filters ---
+
+    def test_dashboard_filters_by_priority_and_category(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.post(
+            "/tickets/new",
+            {"title": "High Hardware", "description": "desc", "category": "Hardware", "priority": "high"},
+            csrf_path="/tickets/new",
+        )
+        self.post(
+            "/tickets/new",
+            {"title": "Low Software", "description": "desc", "category": "Software", "priority": "low"},
+            csrf_path="/tickets/new",
+        )
+        response = self.client.get("/dashboard?priority=high")
+        self.assertIn(b"High Hardware", response.data)
+        self.assertNotIn(b"Low Software", response.data)
+
+        response = self.client.get("/dashboard?category=Software")
+        self.assertIn(b"Low Software", response.data)
+        self.assertNotIn(b"High Hardware", response.data)
+
+
 if __name__ == "__main__":
     unittest.main()

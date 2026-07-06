@@ -292,6 +292,10 @@ def create_app(test_config=None):
     def dashboard():
         status = request.args.get("status", "").strip()
         search = request.args.get("search", "").strip()
+        priority = request.args.get("priority", "").strip()
+        category = request.args.get("category", "").strip()
+        if priority not in {"low", "medium", "high"}:
+            priority = ""
         try:
             page = max(1, int(request.args.get("page", "1")))
         except ValueError:
@@ -307,6 +311,12 @@ def create_app(test_config=None):
         if status:
             where_parts.append("tickets.status = ?")
             where_params.append(status)
+        if priority:
+            where_parts.append("tickets.priority = ?")
+            where_params.append(priority)
+        if category:
+            where_parts.append("tickets.category = ?")
+            where_params.append(category)
         if search:
             where_parts.append(
                 "(tickets.title LIKE ? ESCAPE '\\' OR tickets.description LIKE ? ESCAPE '\\' OR tickets.category LIKE ? ESCAPE '\\')"
@@ -342,6 +352,7 @@ def create_app(test_config=None):
                 "in_progress": query_one("SELECT COUNT(*) AS count FROM tickets WHERE status = 'in_progress'")["count"],
                 "closed": query_one("SELECT COUNT(*) AS count FROM tickets WHERE status = 'closed'")["count"],
             }
+            categories = [r["category"] for r in query_all("SELECT DISTINCT category FROM tickets ORDER BY category")]
         else:
             stats = {
                 "open": query_one(
@@ -357,6 +368,10 @@ def create_app(test_config=None):
                     (g.user["id"],),
                 )["count"],
             }
+            categories = [r["category"] for r in query_all(
+                "SELECT DISTINCT category FROM tickets WHERE user_id = ? ORDER BY category",
+                (g.user["id"],),
+            )]
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
         return render_template(
             "dashboard.html",
@@ -364,6 +379,9 @@ def create_app(test_config=None):
             admins=admins,
             status=status,
             search=search,
+            priority=priority,
+            category=category,
+            categories=categories,
             stats=stats,
             page=page,
             total_pages=total_pages,
@@ -647,6 +665,38 @@ def create_app(test_config=None):
     def file_too_large(e):
         flash("File too large. Maximum size is 5 MB.", "error")
         return redirect(request.referrer or url_for("dashboard"))
+
+    @app.route("/profile")
+    @login_required
+    def profile():
+        return render_template("profile.html")
+
+    @app.route("/profile/email", methods=("POST",))
+    @login_required
+    def update_email():
+        validate_csrf()
+        email = request.form.get("email", "").strip()
+        execute("UPDATE users SET email = ? WHERE id = ?", (email, g.user["id"]))
+        flash("Email updated.", "success")
+        return redirect(url_for("profile"))
+
+    @app.route("/profile/password", methods=("POST",))
+    @login_required
+    def change_password():
+        validate_csrf()
+        current_password = request.form.get("current_password", "")
+        new_password = request.form.get("new_password", "")
+        if not current_password or not new_password:
+            flash("Both fields are required.", "error")
+        elif not check_password_hash(g.user["password_hash"], current_password):
+            flash("Current password is incorrect.", "error")
+        else:
+            execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (generate_password_hash(new_password), g.user["id"]),
+            )
+            flash("Password updated.", "success")
+        return redirect(url_for("profile"))
 
     @app.errorhandler(429)
     def ratelimit_exceeded(e):

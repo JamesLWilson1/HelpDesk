@@ -167,6 +167,18 @@ button,
   border-bottom: none;
 }
 
+.profile-info {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0;
+}
+
+.profile-info dt {
+  font-weight: bold;
+  color: #64748b;
+}
+
 .button-link {
   padding: 0.65rem 0.9rem;
   border-radius: 8px;

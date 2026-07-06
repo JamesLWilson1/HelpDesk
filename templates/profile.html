@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Profile - HelpDesk{% endblock %}
+{% block content %}
+<div class="grid-two">
+  <section class="card">
+    <h2>Profile</h2>
+    <dl class="profile-info">
+      <dt>Username</dt>
+      <dd>{{ g.user["username"] }}</dd>
+      <dt>Role</dt>
+      <dd>{{ g.user["role"] }}</dd>
+      <dt>Member since</dt>
+      <dd>{{ g.user["created_at"] }}</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h3>Notification email</h3>
+    <p class="meta">Used to receive ticket updates. Leave blank to opt out.</p>
+    <form method="post" action="{{ url_for('update_email') }}" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Email address
+        <input type="email" name="email" value="{{ g.user['email'] }}" autocomplete="email">
+      </label>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <h3>Change password</h3>
+  <form method="post" action="{{ url_for('change_password') }}" class="stack narrow">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Current password <input type="password" name="current_password" required autocomplete="current-password"></label>
+    <label>New password <input type="password" name="new_password" required autocomplete="new-password"></label>
+    <button type="submit">Update password</button>
+  </form>
+</section>
+{% endblock %}

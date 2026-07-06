@@ -14,7 +14,7 @@
       </div>
       {% if g.user %}
         <div class="user-panel">
-          <span>{{ g.user["username"] }} ({{ g.user["role"] }})</span>
+          <a href="{{ url_for('profile') }}">{{ g.user["username"] }} ({{ g.user["role"] }})</a>
           <form method="post" action="{{ url_for('logout') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit">Logout</button>
