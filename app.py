@@ -7,6 +7,8 @@ from functools import wraps
 
 from dotenv import load_dotenv
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -36,6 +38,7 @@ def create_app(test_config=None):
         app.config.update(test_config)
 
     mail = Mail(app)
+    limiter = Limiter(key_func=get_remote_address, app=app, storage_uri="memory://")
     os.makedirs(app.instance_path, exist_ok=True)
 
     def get_db():
@@ -216,6 +219,7 @@ def create_app(test_config=None):
         return redirect(url_for("login"))
 
     @app.route("/register", methods=("GET", "POST"))
+    @limiter.limit("5 per minute;20 per hour", methods=["POST"])
     def register():
         if request.method == "POST":
             validate_csrf()
@@ -241,6 +245,7 @@ def create_app(test_config=None):
         return render_template("register.html")
 
     @app.route("/login", methods=("GET", "POST"))
+    @limiter.limit("10 per minute;50 per hour", methods=["POST"])
     def login():
         if request.method == "POST":
             validate_csrf()
@@ -522,6 +527,11 @@ def create_app(test_config=None):
             )
         flash("Ticket status updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    @app.errorhandler(429)
+    def ratelimit_exceeded(e):
+        flash("Too many attempts. Please wait a moment and try again.", "error")
+        return redirect(request.referrer or url_for("login"))
 
     return app
 
