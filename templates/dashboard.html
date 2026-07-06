@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - HelpDesk{% endblock %}
+{% block content %}
+<section class="toolbar">
+  <div class="stats">
+    <div class="stat"><strong>{{ stats.open }}</strong><span>Open</span></div>
+    <div class="stat"><strong>{{ stats.in_progress }}</strong><span>In Progress</span></div>
+    <div class="stat"><strong>{{ stats.closed }}</strong><span>Closed</span></div>
+  </div>
+  <a class="button-link" href="{{ url_for('create_ticket') }}">Create ticket</a>
+</section>
+
+<section class="card">
+  <h2>{{ "All tickets" if g.user["role"] == "admin" else "My tickets" }}</h2>
+  <form method="get" class="filters">
+    <label>Status
+      <select name="status">
+        <option value="">All</option>
+        <option value="open" {% if status == "open" %}selected{% endif %}>Open</option>
+        <option value="in_progress" {% if status == "in_progress" %}selected{% endif %}>In Progress</option>
+        <option value="closed" {% if status == "closed" %}selected{% endif %}>Closed</option>
+      </select>
+    </label>
+    <label>Search <input type="search" name="search" value="{{ search }}" placeholder="title, description, category"></label>
+    <button type="submit">Apply</button>
+  </form>
+
+  {% if tickets %}
+    <div class="ticket-list">
+      {% for ticket in tickets %}
+        <article class="ticket-row">
+          <div>
+            <h3><a href="{{ url_for('ticket_detail', ticket_id=ticket['id']) }}">{{ ticket["title"] }}</a></h3>
+            <p>{{ ticket["description"] }}</p>
+            <p class="meta">
+              Category: {{ ticket["category"] }} · Priority: {{ ticket["priority"] }} · Status: {{ ticket["status"] }}
+              {% if g.user["role"] == "admin" %} · Owner: {{ ticket["owner_username"] }}{% endif %}
+              {% if ticket["assignee_username"] %} · Assigned to: {{ ticket["assignee_username"] }}{% endif %}
+            </p>
+          </div>
+          {% if g.user["role"] == "admin" %}
+            <div class="admin-actions">
+              <form method="post" action="{{ url_for('assign_ticket', ticket_id=ticket['id']) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <select name="assigned_to">
+                  <option value="">Unassigned</option>
+                  {% for admin in admins %}
+                    <option value="{{ admin['id'] }}" {% if ticket["assigned_to"] == admin["id"] %}selected{% endif %}>{{ admin["username"] }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit">Assign</button>
+              </form>
+            </div>
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No tickets match the current filters.</p>
+  {% endif %}
+</section>
+{% endblock %}

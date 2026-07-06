@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Register - HelpDesk{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h2>Create account</h2>
+  <p>The first registered user becomes an admin automatically.</p>
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Username <input type="text" name="username" required></label>
+    <label>Password <input type="password" name="password" required></label>
+    <button type="submit">Register</button>
+  </form>
+  <p>Already registered? <a href="{{ url_for('login') }}">Sign in</a>.</p>
+</section>
+{% endblock %}
