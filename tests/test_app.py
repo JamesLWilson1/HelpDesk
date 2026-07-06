@@ -305,6 +305,61 @@ class HelpDeskAppTests(unittest.TestCase):
         )
         self.assertIn(b"1000 characters", response.data)
 
+    # --- Ticket deletion ---
+
+    def test_admin_can_delete_ticket(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket("To be deleted")
+        self.post("/logout", {}, csrf_path="/dashboard")
+        self.login("admin-user")
+        token = self.dashboard_csrf()
+        response = self.client.post(
+            "/tickets/1/delete",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+        self.assertIn(b"Ticket deleted", response.data)
+        self.assertNotIn(b"To be deleted", response.data)
+        response = self.client.get("/tickets/1")
+        self.assertEqual(response.status_code, 404)
+
+    def test_user_cannot_delete_ticket(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket()
+        token = self.dashboard_csrf()
+        response = self.client.post(
+            "/tickets/1/delete",
+            data={"csrf_token": token},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    # --- Pagination ---
+
+    def test_pagination_second_page_shows_older_tickets(self):
+        import app as app_module
+        original = app_module.PER_PAGE
+        app_module.PER_PAGE = 2
+        try:
+            self.register("admin-user")
+            self.login("admin-user")
+            for i in range(1, 4):
+                self.create_ticket(title=f"Ticket {i}")
+            # Page 1 should show newest two (Ticket 3, Ticket 2)
+            response = self.client.get("/dashboard?page=1")
+            self.assertIn(b"Ticket 3", response.data)
+            self.assertIn(b"Ticket 2", response.data)
+            self.assertNotIn(b"Ticket 1", response.data)
+            # Page 2 should show oldest one
+            response = self.client.get("/dashboard?page=2")
+            self.assertIn(b"Ticket 1", response.data)
+            self.assertNotIn(b"Ticket 3", response.data)
+        finally:
+            app_module.PER_PAGE = original
+
 
 if __name__ == "__main__":
     unittest.main()

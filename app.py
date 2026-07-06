@@ -3,14 +3,16 @@ import re
 import secrets
 import sqlite3
 import threading
+import uuid
 from functools import wraps
 
 from dotenv import load_dotenv
-from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, redirect, render_template, request, send_file, session, url_for
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 load_dotenv()
 
@@ -19,6 +21,9 @@ MAX_TITLE_LENGTH = 120
 MAX_CATEGORY_LENGTH = 60
 MAX_DESCRIPTION_LENGTH = 2000
 MAX_COMMENT_LENGTH = 1000
+PER_PAGE = 20
+MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
+ALLOWED_EXTENSIONS = {".csv", ".gif", ".jpeg", ".jpg", ".log", ".pdf", ".png", ".txt", ".webp"}
 
 
 def create_app(test_config=None):
@@ -32,6 +37,7 @@ def create_app(test_config=None):
         MAIL_USERNAME=os.environ.get("MAIL_USERNAME"),
         MAIL_PASSWORD=os.environ.get("MAIL_PASSWORD"),
         MAIL_DEFAULT_SENDER=os.environ.get("MAIL_DEFAULT_SENDER"),
+        MAX_CONTENT_LENGTH=MAX_FILE_BYTES,
     )
 
     if test_config is not None:
@@ -86,6 +92,18 @@ def create_app(test_config=None):
                 ticket_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 body TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            );
+
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                size INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (ticket_id) REFERENCES tickets (id),
                 FOREIGN KEY (user_id) REFERENCES users (id)
@@ -274,45 +292,49 @@ def create_app(test_config=None):
     def dashboard():
         status = request.args.get("status", "").strip()
         search = request.args.get("search", "").strip()
-        filters = []
-        params = []
+        try:
+            page = max(1, int(request.args.get("page", "1")))
+        except ValueError:
+            page = 1
 
-        if g.user["role"] == "admin":
-            base_query = (
-                """
-                SELECT tickets.*, owner.username AS owner_username, assignee.username AS assignee_username
-                FROM tickets
-                JOIN users AS owner ON owner.id = tickets.user_id
-                LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
-                """
-            )
-        else:
-            base_query = (
-                """
-                SELECT tickets.*, owner.username AS owner_username, assignee.username AS assignee_username
-                FROM tickets
-                JOIN users AS owner ON owner.id = tickets.user_id
-                LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
-                WHERE tickets.user_id = ?
-                """
-            )
-            params.append(g.user["id"])
+        where_parts = []
+        where_params = []
+
+        if g.user["role"] != "admin":
+            where_parts.append("tickets.user_id = ?")
+            where_params.append(g.user["id"])
 
         if status:
-            filters.append("tickets.status = ?")
-            params.append(status)
+            where_parts.append("tickets.status = ?")
+            where_params.append(status)
         if search:
-            filters.append(
+            where_parts.append(
                 "(tickets.title LIKE ? ESCAPE '\\' OR tickets.description LIKE ? ESCAPE '\\' OR tickets.category LIKE ? ESCAPE '\\')"
             )
             wildcard = f"%{escape_like(search)}%"
-            params.extend([wildcard, wildcard, wildcard])
+            where_params.extend([wildcard, wildcard, wildcard])
 
-        if filters:
-            joiner = " AND " if "WHERE" in base_query else " WHERE "
-            base_query += joiner + " AND ".join(filters)
+        where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-        base_query += " ORDER BY tickets.updated_at DESC, tickets.id DESC"
+        total = query_one(
+            "SELECT COUNT(*) AS count FROM tickets" + where_clause,
+            tuple(where_params),
+        )["count"]
+
+        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+        page = min(page, total_pages)
+
+        data_query = (
+            """
+            SELECT tickets.*, owner.username AS owner_username, assignee.username AS assignee_username
+            FROM tickets
+            JOIN users AS owner ON owner.id = tickets.user_id
+            LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
+            """
+            + where_clause
+            + " ORDER BY tickets.updated_at DESC, tickets.id DESC LIMIT ? OFFSET ?"
+        )
+        tickets = query_all(data_query, tuple(where_params) + (PER_PAGE, (page - 1) * PER_PAGE))
 
         if g.user["role"] == "admin":
             stats = {
@@ -336,7 +358,6 @@ def create_app(test_config=None):
                 )["count"],
             }
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
-        tickets = query_all(base_query, tuple(params))
         return render_template(
             "dashboard.html",
             tickets=tickets,
@@ -344,6 +365,9 @@ def create_app(test_config=None):
             status=status,
             search=search,
             stats=stats,
+            page=page,
+            total_pages=total_pages,
+            total=total,
         )
 
     @app.route("/tickets/new", methods=("GET", "POST"))
@@ -397,8 +421,24 @@ def create_app(test_config=None):
             """,
             (ticket_id,),
         )
+        attachments = query_all(
+            """
+            SELECT attachments.*, users.username AS uploader
+            FROM attachments
+            JOIN users ON users.id = attachments.user_id
+            WHERE attachments.ticket_id = ?
+            ORDER BY attachments.created_at ASC, attachments.id ASC
+            """,
+            (ticket_id,),
+        )
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
-        return render_template("ticket_detail.html", ticket=ticket, comments=comments, admins=admins)
+        return render_template(
+            "ticket_detail.html",
+            ticket=ticket,
+            comments=comments,
+            attachments=attachments,
+            admins=admins,
+        )
 
     @app.route("/tickets/<int:ticket_id>/edit", methods=("GET", "POST"))
     @login_required
@@ -527,6 +567,86 @@ def create_app(test_config=None):
             )
         flash("Ticket status updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    @app.route("/tickets/<int:ticket_id>/delete", methods=("POST",))
+    @admin_required
+    def delete_ticket(ticket_id):
+        validate_csrf()
+        get_ticket(ticket_id)
+        for att in query_all("SELECT filename FROM attachments WHERE ticket_id = ?", (ticket_id,)):
+            file_path = os.path.join(app.instance_path, "uploads", att["filename"])
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        execute("DELETE FROM attachments WHERE ticket_id = ?", (ticket_id,))
+        execute("DELETE FROM comments WHERE ticket_id = ?", (ticket_id,))
+        execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+        flash("Ticket deleted.", "success")
+        return redirect(url_for("dashboard"))
+
+    @app.route("/tickets/<int:ticket_id>/attachments", methods=("POST",))
+    @login_required
+    def upload_attachment(ticket_id):
+        validate_csrf()
+        get_ticket(ticket_id)
+        file = request.files.get("file")
+        if not file or not file.filename:
+            flash("No file selected.", "error")
+            return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+        ext = os.path.splitext(secure_filename(file.filename))[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            flash(f"File type not allowed. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}", "error")
+            return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+        upload_dir = os.path.join(app.instance_path, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        stored_name = f"{uuid.uuid4().hex}{ext}"
+        file.save(os.path.join(upload_dir, stored_name))
+        file_size = os.path.getsize(os.path.join(upload_dir, stored_name))
+        execute(
+            "INSERT INTO attachments (ticket_id, user_id, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
+            (ticket_id, g.user["id"], stored_name, secure_filename(file.filename), file_size),
+        )
+        flash("Attachment uploaded.", "success")
+        return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    @app.route("/tickets/<int:ticket_id>/attachments/<int:attachment_id>")
+    @login_required
+    def download_attachment(ticket_id, attachment_id):
+        get_ticket(ticket_id)
+        attachment = query_one(
+            "SELECT * FROM attachments WHERE id = ? AND ticket_id = ?",
+            (attachment_id, ticket_id),
+        )
+        if attachment is None:
+            abort(404)
+        file_path = os.path.join(app.instance_path, "uploads", attachment["filename"])
+        if not os.path.isfile(file_path):
+            abort(404)
+        return send_file(file_path, download_name=attachment["original_name"], as_attachment=False)
+
+    @app.route("/tickets/<int:ticket_id>/attachments/<int:attachment_id>/delete", methods=("POST",))
+    @login_required
+    def delete_attachment(ticket_id, attachment_id):
+        validate_csrf()
+        ticket = get_ticket(ticket_id)
+        attachment = query_one(
+            "SELECT * FROM attachments WHERE id = ? AND ticket_id = ?",
+            (attachment_id, ticket_id),
+        )
+        if attachment is None:
+            abort(404)
+        if g.user["role"] != "admin" and ticket["user_id"] != g.user["id"]:
+            abort(403)
+        file_path = os.path.join(app.instance_path, "uploads", attachment["filename"])
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+        execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+        flash("Attachment deleted.", "success")
+        return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    @app.errorhandler(413)
+    def file_too_large(e):
+        flash("File too large. Maximum size is 5 MB.", "error")
+        return redirect(request.referrer or url_for("dashboard"))
 
     @app.errorhandler(429)
     def ratelimit_exceeded(e):

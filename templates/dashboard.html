@@ -55,6 +55,22 @@
         </article>
       {% endfor %}
     </div>
+
+    {% if total_pages > 1 %}
+      <nav class="pagination">
+        {% if page > 1 %}
+          <a href="{{ url_for('dashboard', page=page-1, status=status, search=search) }}">&larr; Previous</a>
+        {% else %}
+          <span class="pagination-disabled">&larr; Previous</span>
+        {% endif %}
+        <span>Page {{ page }} of {{ total_pages }} &middot; {{ total }} ticket{{ 's' if total != 1 }}</span>
+        {% if page < total_pages %}
+          <a href="{{ url_for('dashboard', page=page+1, status=status, search=search) }}">Next &rarr;</a>
+        {% else %}
+          <span class="pagination-disabled">Next &rarr;</span>
+        {% endif %}
+      </nav>
+    {% endif %}
   {% else %}
     <p>No tickets match the current filters.</p>
   {% endif %}

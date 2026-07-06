@@ -139,6 +139,34 @@ button,
   cursor: pointer;
 }
 
+.button-danger {
+  background: #dc2626;
+}
+
+.button-small {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  border-radius: 4px;
+}
+
+.attachment-list {
+  list-style: none;
+  padding: 0;
+  margin-top: 0.75rem;
+}
+
+.attachment-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.attachment-row:last-child {
+  border-bottom: none;
+}
+
 .button-link {
   padding: 0.65rem 0.9rem;
   border-radius: 8px;
@@ -162,6 +190,19 @@ button,
 
 .flash.error {
   background: #fee2e2;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 0 0.25rem;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
+.pagination-disabled {
+  color: #94a3b8;
 }
 
 .resolution {
