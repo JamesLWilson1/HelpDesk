@@ -423,6 +423,34 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertIn(b"Low Software", response.data)
         self.assertNotIn(b"High Hardware", response.data)
 
+    # --- Audit log ---
+
+    def test_audit_log_records_ticket_lifecycle(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket("Audit test ticket")
+        self.post("/logout", {}, csrf_path="/dashboard")
+
+        self.login("admin-user")
+        token = self.dashboard_csrf()
+        self.client.post(
+            "/tickets/1/status",
+            data={"csrf_token": token, "status": "in_progress", "resolution_notes": ""},
+            follow_redirects=True,
+        )
+        token = self.dashboard_csrf()
+        self.client.post(
+            "/tickets/1/assign",
+            data={"csrf_token": token, "assigned_to": "1"},
+            follow_redirects=True,
+        )
+
+        response = self.client.get("/tickets/1")
+        self.assertIn(b"Ticket created", response.data)
+        self.assertIn(b"Status changed from open to in_progress", response.data)
+        self.assertIn(b"Assigned to admin-user", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

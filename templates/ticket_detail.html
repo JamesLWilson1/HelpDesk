@@ -127,4 +127,20 @@
     <p>No comments yet.</p>
   {% endif %}
 </section>
+
+<section class="card">
+  <h3>Activity</h3>
+  {% if activity %}
+    <ul class="activity-log">
+      {% for entry in activity %}
+        <li class="activity-row">
+          <span>{{ entry["detail"] }}</span>
+          <span class="meta">{{ entry["actor"] }} &middot; {{ entry["created_at"] }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="meta">No activity recorded.</p>
+  {% endif %}
+</section>
 {% endblock %}

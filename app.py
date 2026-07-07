@@ -108,6 +108,17 @@ def create_app(test_config=None):
                 FOREIGN KEY (ticket_id) REFERENCES tickets (id),
                 FOREIGN KEY (user_id) REFERENCES users (id)
             );
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            );
             """
         )
         db.commit()
@@ -173,6 +184,12 @@ def create_app(test_config=None):
                     pass
 
         threading.Thread(target=_send, daemon=True).start()
+
+    def log_action(ticket_id, action, detail=""):
+        execute(
+            "INSERT INTO audit_log (ticket_id, user_id, action, detail) VALUES (?, ?, ?, ?)",
+            (ticket_id, g.user["id"], action, detail),
+        )
 
     def load_logged_in_user():
         user_id = session.get("user_id")
@@ -421,6 +438,7 @@ def create_app(test_config=None):
                     f"Title: {title}\nCategory: {category}\nPriority: {priority}\n\n"
                     f"View ticket: {ticket_url}",
                 )
+                log_action(new_ticket_id, "ticket_created", "Ticket created")
                 flash("Ticket created successfully.", "success")
                 return redirect(url_for("ticket_detail", ticket_id=new_ticket_id))
         return render_template("ticket_form.html", ticket=None)
@@ -449,12 +467,23 @@ def create_app(test_config=None):
             """,
             (ticket_id,),
         )
+        activity = query_all(
+            """
+            SELECT audit_log.*, users.username AS actor
+            FROM audit_log
+            JOIN users ON users.id = audit_log.user_id
+            WHERE audit_log.ticket_id = ?
+            ORDER BY audit_log.created_at ASC, audit_log.id ASC
+            """,
+            (ticket_id,),
+        )
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
         return render_template(
             "ticket_detail.html",
             ticket=ticket,
             comments=comments,
             attachments=attachments,
+            activity=activity,
             admins=admins,
         )
 
@@ -521,6 +550,7 @@ def create_app(test_config=None):
                 f"{g.user['username']} added a comment on ticket #{ticket_id}: {ticket['title']}\n\n"
                 f"{body}\n\nView ticket: {comment_url}",
             )
+            log_action(ticket_id, "comment_added", "Comment added")
             flash("Comment added.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
@@ -535,7 +565,7 @@ def create_app(test_config=None):
         except ValueError:
             abort(400)
         if assignee_id is not None:
-            assignee = query_one("SELECT id, email FROM users WHERE id = ? AND role = 'admin'", (assignee_id,))
+            assignee = query_one("SELECT id, email, username FROM users WHERE id = ? AND role = 'admin'", (assignee_id,))
             if assignee is None:
                 abort(400)
         else:
@@ -544,6 +574,10 @@ def create_app(test_config=None):
             "UPDATE tickets SET assigned_to = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (assignee_id, ticket_id),
         )
+        if assignee:
+            log_action(ticket_id, "assigned", f"Assigned to {assignee['username']}")
+        else:
+            log_action(ticket_id, "assigned", "Assignment cleared")
         if assignee and assignee["email"]:
             assign_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
             send_notification(
@@ -572,6 +606,8 @@ def create_app(test_config=None):
             """,
             (status, resolution_notes, ticket_id),
         )
+        if ticket["status"] != status:
+            log_action(ticket_id, "status_changed", f"Status changed from {ticket['status']} to {status}")
         owner = query_one("SELECT email FROM users WHERE id = ?", (ticket["user_id"],))
         if owner and owner["email"]:
             status_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
@@ -595,6 +631,7 @@ def create_app(test_config=None):
             file_path = os.path.join(app.instance_path, "uploads", att["filename"])
             if os.path.isfile(file_path):
                 os.remove(file_path)
+        execute("DELETE FROM audit_log WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM attachments WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM comments WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
@@ -623,6 +660,7 @@ def create_app(test_config=None):
             "INSERT INTO attachments (ticket_id, user_id, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
             (ticket_id, g.user["id"], stored_name, secure_filename(file.filename), file_size),
         )
+        log_action(ticket_id, "attachment_uploaded", f"File uploaded: {secure_filename(file.filename)}")
         flash("Attachment uploaded.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
@@ -658,6 +696,7 @@ def create_app(test_config=None):
         if os.path.isfile(file_path):
             os.remove(file_path)
         execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
+        log_action(ticket_id, "attachment_deleted", f"File deleted: {attachment['original_name']}")
         flash("Attachment deleted.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 

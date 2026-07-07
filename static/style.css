@@ -179,6 +179,25 @@ button,
   color: #64748b;
 }
 
+.activity-log {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.activity-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.activity-row:last-child {
+  border-bottom: none;
+}
+
 .button-link {
   padding: 0.65rem 0.9rem;
   border-radius: 8px;
