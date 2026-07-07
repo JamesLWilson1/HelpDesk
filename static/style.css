@@ -198,6 +198,44 @@ button,
   border-bottom: none;
 }
 
+.user-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.user-table th,
+.user-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.user-table thead th {
+  color: #64748b;
+  font-weight: bold;
+}
+
+.user-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ticket-overdue {
+  border-left: 3px solid #dc2626;
+}
+
+.badge-overdue {
+  background: #fee2e2;
+  color: #dc2626;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
 .button-link {
   padding: 0.65rem 0.9rem;
   border-radius: 8px;

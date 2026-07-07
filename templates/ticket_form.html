@@ -14,6 +14,9 @@
         {% endfor %}
       </select>
     </label>
+    <label>Due date <span class="meta">(optional)</span>
+      <input type="date" name="due_date" value="{{ ticket['due_date'] if ticket and ticket['due_date'] else '' }}">
+    </label>
     <label>Description
       <textarea name="description" rows="8" maxlength="2000" required>{{ ticket['description'] if ticket else '' }}</textarea>
     </label>

@@ -451,6 +451,156 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertIn(b"Status changed from open to in_progress", response.data)
         self.assertIn(b"Assigned to admin-user", response.data)
 
+    # --- Admin user management ---
+
+    def test_admin_can_view_users_list(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("admin-user")
+        response = self.client.get("/admin/users")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"admin-user", response.data)
+        self.assertIn(b"normal-user", response.data)
+
+    def test_admin_can_promote_and_demote_user(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("admin-user")
+        token = self.csrf_token("/admin/users")
+        response = self.client.post(
+            "/admin/users/2/role",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+        self.assertIn(b"admin", response.data)
+        # Demote back
+        token = self.csrf_token("/admin/users")
+        self.client.post("/admin/users/2/role", data={"csrf_token": token}, follow_redirects=True)
+
+    def test_admin_cannot_demote_last_admin(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/admin/users")
+        response = self.client.post(
+            "/admin/users/1/role",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+        self.assertIn(b"cannot change your own role", response.data)
+
+    def test_admin_can_reset_user_password(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("admin-user")
+        token = self.csrf_token("/admin/users")
+        response = self.client.post(
+            "/admin/users/2/password",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+        self.assertIn(b"reset to:", response.data)
+
+    def test_admin_cannot_delete_user_with_tickets(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket()
+        self.post("/logout", {}, csrf_path="/dashboard")
+        self.login("admin-user")
+        token = self.csrf_token("/admin/users")
+        response = self.client.post(
+            "/admin/users/2/delete",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+        self.assertIn(b"ticket(s)", response.data)
+
+    def test_user_cannot_access_admin_users_page(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        response = self.client.get("/admin/users")
+        self.assertEqual(response.status_code, 403)
+
+    # --- Ticket sorting ---
+
+    def test_dashboard_sort_by_priority(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.post(
+            "/tickets/new",
+            {"title": "Low ticket", "description": "d", "category": "General", "priority": "low"},
+            csrf_path="/tickets/new",
+        )
+        self.post(
+            "/tickets/new",
+            {"title": "High ticket", "description": "d", "category": "General", "priority": "high"},
+            csrf_path="/tickets/new",
+        )
+        response = self.client.get("/dashboard?sort=priority_high")
+        high_pos = response.data.index(b"High ticket")
+        low_pos = response.data.index(b"Low ticket")
+        self.assertLess(high_pos, low_pos)
+
+    # --- CSV export ---
+
+    def test_admin_can_export_csv(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket("Export test")
+        response = self.client.get("/admin/export/tickets.csv")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"text/csv", response.content_type.encode())
+        self.assertIn(b"Export test", response.data)
+        self.assertIn(b"title", response.data)
+
+    def test_user_cannot_export_csv(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        response = self.client.get("/admin/export/tickets.csv")
+        self.assertEqual(response.status_code, 403)
+
+    # --- Due dates ---
+
+    def test_ticket_due_date_is_stored_and_shown(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/tickets/new")
+        self.client.post(
+            "/tickets/new",
+            data={
+                "csrf_token": token,
+                "title": "Due date ticket",
+                "description": "Test",
+                "category": "General",
+                "priority": "high",
+                "due_date": "2030-12-31",
+            },
+            follow_redirects=True,
+        )
+        response = self.client.get("/tickets/1")
+        self.assertIn(b"2030-12-31", response.data)
+
+    def test_overdue_ticket_highlighted_on_dashboard(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        token = self.csrf_token("/tickets/new")
+        self.client.post(
+            "/tickets/new",
+            data={
+                "csrf_token": token,
+                "title": "Overdue ticket",
+                "description": "Test",
+                "category": "General",
+                "priority": "high",
+                "due_date": "2000-01-01",
+            },
+            follow_redirects=True,
+        )
+        response = self.client.get("/dashboard")
+        self.assertIn(b"ticket-overdue", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

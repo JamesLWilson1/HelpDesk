@@ -7,7 +7,12 @@
     <div class="stat"><strong>{{ stats.in_progress }}</strong><span>In Progress</span></div>
     <div class="stat"><strong>{{ stats.closed }}</strong><span>Closed</span></div>
   </div>
-  <a class="button-link" href="{{ url_for('create_ticket') }}">Create ticket</a>
+  <div class="toolbar-actions">
+    {% if g.user["role"] == "admin" %}
+      <a class="button-link" href="{{ url_for('export_tickets_csv') }}">Export CSV</a>
+    {% endif %}
+    <a class="button-link" href="{{ url_for('create_ticket') }}">Create ticket</a>
+  </div>
 </section>
 
 <section class="card">
@@ -38,13 +43,25 @@
       </select>
     </label>
     <label>Search <input type="search" name="search" value="{{ search }}" placeholder="title, description"></label>
+    <label>Sort
+      <select name="sort">
+        <option value="updated_desc" {% if sort == "updated_desc" %}selected{% endif %}>Newest updated</option>
+        <option value="updated_asc" {% if sort == "updated_asc" %}selected{% endif %}>Oldest updated</option>
+        <option value="created_desc" {% if sort == "created_desc" %}selected{% endif %}>Newest created</option>
+        <option value="created_asc" {% if sort == "created_asc" %}selected{% endif %}>Oldest created</option>
+        <option value="priority_high" {% if sort == "priority_high" %}selected{% endif %}>Priority: high first</option>
+        <option value="priority_low" {% if sort == "priority_low" %}selected{% endif %}>Priority: low first</option>
+        <option value="due_asc" {% if sort == "due_asc" %}selected{% endif %}>Due date: soonest first</option>
+        <option value="due_desc" {% if sort == "due_desc" %}selected{% endif %}>Due date: latest first</option>
+      </select>
+    </label>
     <button type="submit">Apply</button>
   </form>
 
   {% if tickets %}
     <div class="ticket-list">
       {% for ticket in tickets %}
-        <article class="ticket-row">
+        <article class="ticket-row{% if ticket['due_date'] and ticket['due_date'] < today and ticket['status'] != 'closed' %} ticket-overdue{% endif %}">
           <div>
             <h3><a href="{{ url_for('ticket_detail', ticket_id=ticket['id']) }}">{{ ticket["title"] }}</a></h3>
             <p>{{ ticket["description"] }}</p>
@@ -52,6 +69,7 @@
               Category: {{ ticket["category"] }} · Priority: {{ ticket["priority"] }} · Status: {{ ticket["status"] }}
               {% if g.user["role"] == "admin" %} · Owner: {{ ticket["owner_username"] }}{% endif %}
               {% if ticket["assignee_username"] %} · Assigned to: {{ ticket["assignee_username"] }}{% endif %}
+              {% if ticket["due_date"] %} · Due: {{ ticket["due_date"] }}{% if ticket["due_date"] < today and ticket["status"] != "closed" %} ⚠{% endif %}{% endif %}
             </p>
           </div>
           {% if g.user["role"] == "admin" %}
@@ -75,13 +93,13 @@
     {% if total_pages > 1 %}
       <nav class="pagination">
         {% if page > 1 %}
-          <a href="{{ url_for('dashboard', page=page-1, status=status, priority=priority, category=category, search=search) }}">&larr; Previous</a>
+          <a href="{{ url_for('dashboard', page=page-1, status=status, priority=priority, category=category, search=search, sort=sort) }}">&larr; Previous</a>
         {% else %}
           <span class="pagination-disabled">&larr; Previous</span>
         {% endif %}
         <span>Page {{ page }} of {{ total_pages }} &middot; {{ total }} ticket{{ 's' if total != 1 }}</span>
         {% if page < total_pages %}
-          <a href="{{ url_for('dashboard', page=page+1, status=status, priority=priority, category=category, search=search) }}">Next &rarr;</a>
+          <a href="{{ url_for('dashboard', page=page+1, status=status, priority=priority, category=category, search=search, sort=sort) }}">Next &rarr;</a>
         {% else %}
           <span class="pagination-disabled">Next &rarr;</span>
         {% endif %}

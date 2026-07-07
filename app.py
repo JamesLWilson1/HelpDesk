@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import re
 import secrets
@@ -7,7 +9,7 @@ import uuid
 from functools import wraps
 
 from dotenv import load_dotenv
-from flask import Flask, abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
@@ -24,6 +26,16 @@ MAX_COMMENT_LENGTH = 1000
 PER_PAGE = 20
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 ALLOWED_EXTENSIONS = {".csv", ".gif", ".jpeg", ".jpg", ".log", ".pdf", ".png", ".txt", ".webp"}
+SORT_OPTIONS = {
+    "updated_desc": "tickets.updated_at DESC, tickets.id DESC",
+    "updated_asc": "tickets.updated_at ASC, tickets.id ASC",
+    "created_desc": "tickets.created_at DESC, tickets.id DESC",
+    "created_asc": "tickets.created_at ASC, tickets.id ASC",
+    "priority_high": "CASE tickets.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END ASC, tickets.updated_at DESC",
+    "priority_low": "CASE tickets.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END DESC, tickets.updated_at DESC",
+    "due_asc": "COALESCE(tickets.due_date, '9999-12-31') ASC, tickets.id DESC",
+    "due_desc": "COALESCE(tickets.due_date, '') DESC, tickets.id DESC",
+}
 
 
 def create_app(test_config=None):
@@ -81,6 +93,7 @@ def create_app(test_config=None):
                 resolution_notes TEXT NOT NULL DEFAULT '',
                 user_id INTEGER NOT NULL,
                 assigned_to INTEGER,
+                due_date TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users (id),
@@ -125,6 +138,12 @@ def create_app(test_config=None):
         # Migrate: add email column to existing databases
         try:
             db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        # Migrate: add due_date column to existing databases
+        try:
+            db.execute("ALTER TABLE tickets ADD COLUMN due_date TEXT")
             db.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
@@ -245,7 +264,8 @@ def create_app(test_config=None):
 
     @app.context_processor
     def inject_helpers():
-        return {"csrf_token": new_csrf_token()}
+        from datetime import date
+        return {"csrf_token": new_csrf_token(), "today": date.today().isoformat()}
 
     @app.route("/")
     def index():
@@ -313,6 +333,9 @@ def create_app(test_config=None):
         category = request.args.get("category", "").strip()
         if priority not in {"low", "medium", "high"}:
             priority = ""
+        sort = request.args.get("sort", "").strip()
+        if sort not in SORT_OPTIONS:
+            sort = "updated_desc"
         try:
             page = max(1, int(request.args.get("page", "1")))
         except ValueError:
@@ -359,7 +382,7 @@ def create_app(test_config=None):
             LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
             """
             + where_clause
-            + " ORDER BY tickets.updated_at DESC, tickets.id DESC LIMIT ? OFFSET ?"
+            + f" ORDER BY {SORT_OPTIONS[sort]} LIMIT ? OFFSET ?"
         )
         tickets = query_all(data_query, tuple(where_params) + (PER_PAGE, (page - 1) * PER_PAGE))
 
@@ -399,6 +422,7 @@ def create_app(test_config=None):
             priority=priority,
             category=category,
             categories=categories,
+            sort=sort,
             stats=stats,
             page=page,
             total_pages=total_pages,
@@ -414,16 +438,17 @@ def create_app(test_config=None):
             description = request.form.get("description", "").strip()
             category = request.form.get("category", "").strip()
             priority = request.form.get("priority", "medium")
+            due_date = request.form.get("due_date", "").strip() or None
             error = validate_ticket_fields(title, description, category)
             if error:
                 flash(error, "error")
             else:
                 cursor = execute(
                     """
-                    INSERT INTO tickets (title, description, category, priority, user_id)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO tickets (title, description, category, priority, user_id, due_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (title, description, category, priority, g.user["id"]),
+                    (title, description, category, priority, g.user["id"], due_date),
                 )
                 new_ticket_id = cursor.lastrowid
                 admin_emails = [
@@ -498,6 +523,7 @@ def create_app(test_config=None):
             description = request.form.get("description", "").strip()
             category = request.form.get("category", "").strip()
             priority = request.form.get("priority", "medium")
+            due_date = request.form.get("due_date", "").strip() or None
             error = validate_ticket_fields(title, description, category)
             if error:
                 flash(error, "error")
@@ -505,10 +531,10 @@ def create_app(test_config=None):
                 execute(
                     """
                     UPDATE tickets
-                    SET title = ?, description = ?, category = ?, priority = ?, updated_at = CURRENT_TIMESTAMP
+                    SET title = ?, description = ?, category = ?, priority = ?, due_date = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (title, description, category, priority, ticket_id),
+                    (title, description, category, priority, due_date, ticket_id),
                 )
                 flash("Ticket updated successfully.", "success")
                 return redirect(url_for("ticket_detail", ticket_id=ticket_id))
@@ -699,6 +725,123 @@ def create_app(test_config=None):
         log_action(ticket_id, "attachment_deleted", f"File deleted: {attachment['original_name']}")
         flash("Attachment deleted.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
+    @app.route("/admin/users")
+    @admin_required
+    def admin_users():
+        users = query_all(
+            """
+            SELECT users.id, users.username, users.role, users.email, users.created_at,
+                COUNT(tickets.id) AS ticket_count
+            FROM users
+            LEFT JOIN tickets ON tickets.user_id = users.id
+            GROUP BY users.id
+            ORDER BY users.created_at ASC, users.id ASC
+            """
+        )
+        return render_template("admin_users.html", users=users)
+
+    @app.route("/admin/users/<int:user_id>/role", methods=("POST",))
+    @admin_required
+    def admin_toggle_role(user_id):
+        validate_csrf()
+        if user_id == g.user["id"]:
+            flash("You cannot change your own role.", "error")
+            return redirect(url_for("admin_users"))
+        user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+        if user is None:
+            abort(404)
+        if user["role"] == "admin":
+            admin_count = query_one("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")["count"]
+            if admin_count <= 1:
+                flash("Cannot demote the last admin.", "error")
+                return redirect(url_for("admin_users"))
+            new_role = "user"
+        else:
+            new_role = "admin"
+        execute("UPDATE users SET role = ? WHERE id = ?", (new_role, user_id))
+        flash(f"{user['username']} is now {new_role}.", "success")
+        return redirect(url_for("admin_users"))
+
+    @app.route("/admin/users/<int:user_id>/password", methods=("POST",))
+    @admin_required
+    def admin_reset_password(user_id):
+        validate_csrf()
+        if user_id == g.user["id"]:
+            flash("Use your profile page to change your own password.", "error")
+            return redirect(url_for("admin_users"))
+        user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+        if user is None:
+            abort(404)
+        new_password = secrets.token_urlsafe(12)
+        execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (generate_password_hash(new_password), user_id),
+        )
+        flash(f"Password for {user['username']} reset to: {new_password}", "success")
+        return redirect(url_for("admin_users"))
+
+    @app.route("/admin/users/<int:user_id>/delete", methods=("POST",))
+    @admin_required
+    def admin_delete_user(user_id):
+        validate_csrf()
+        if user_id == g.user["id"]:
+            flash("You cannot delete your own account.", "error")
+            return redirect(url_for("admin_users"))
+        user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+        if user is None:
+            abort(404)
+        if user["role"] == "admin":
+            admin_count = query_one("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'")["count"]
+            if admin_count <= 1:
+                flash("Cannot delete the last admin.", "error")
+                return redirect(url_for("admin_users"))
+        ticket_count = query_one("SELECT COUNT(*) AS count FROM tickets WHERE user_id = ?", (user_id,))["count"]
+        if ticket_count > 0:
+            flash(
+                f"Cannot delete {user['username']} — they have {ticket_count} ticket(s). Delete or reassign them first.",
+                "error",
+            )
+            return redirect(url_for("admin_users"))
+        execute("UPDATE tickets SET assigned_to = NULL WHERE assigned_to = ?", (user_id,))
+        execute("DELETE FROM users WHERE id = ?", (user_id,))
+        flash(f"User {user['username']} deleted.", "success")
+        return redirect(url_for("admin_users"))
+
+    @app.route("/admin/export/tickets.csv")
+    @admin_required
+    def export_tickets_csv():
+        rows = query_all(
+            """
+            SELECT tickets.id, tickets.title, tickets.category, tickets.priority, tickets.status,
+                owner.username AS owner,
+                COALESCE(assignee.username, '') AS assigned_to,
+                tickets.created_at, tickets.updated_at, tickets.due_date,
+                tickets.resolution_notes,
+                COUNT(comments.id) AS comment_count
+            FROM tickets
+            JOIN users AS owner ON owner.id = tickets.user_id
+            LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
+            LEFT JOIN comments ON comments.ticket_id = tickets.id
+            GROUP BY tickets.id
+            ORDER BY tickets.id ASC
+            """
+        )
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "title", "category", "priority", "status", "owner",
+                         "assigned_to", "created_at", "updated_at", "due_date", "comment_count", "resolution_notes"])
+        for row in rows:
+            writer.writerow([
+                row["id"], row["title"], row["category"], row["priority"], row["status"],
+                row["owner"], row["assigned_to"], row["created_at"], row["updated_at"],
+                row["due_date"] or "", row["comment_count"], row["resolution_notes"],
+            ])
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=tickets.csv"},
+        )
 
     @app.errorhandler(413)
     def file_too_large(e):
