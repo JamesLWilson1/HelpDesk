@@ -208,7 +208,7 @@ def create_app(test_config=None):
         
     def generate_ticket_summary(ticket, comments):
         if not os.getenv("OPENAI_API_KEY"):
-        return "OpenAI API key is not configured."
+            return "OpenAI API key is not configured."
 
     conversation = []
 
@@ -577,7 +577,7 @@ Comments:
 
         ticket = get_ticket(ticket_id)
 
-    comments = query_all(
+        comments = query_all(
         """
         SELECT comments.*, users.username
         FROM comments
@@ -588,10 +588,10 @@ Comments:
         (ticket_id,),
     )
 
-    summary = generate_ticket_summary(ticket, comments)
+        summary = generate_ticket_summary(ticket, comments)
 
-    return {
-        "summary": summary
+        return {
+            "summary": summary
     }
 
     @app.route("/tickets/<int:ticket_id>/edit", methods=("GET", "POST"))
