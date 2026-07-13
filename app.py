@@ -210,11 +210,11 @@ def create_app(test_config=None):
         if not os.getenv("OPENAI_API_KEY"):
             return "OpenAI API key is not configured."
 
-    conversation = []
+        conversation = []
 
-    for comment in comments:
-        conversation.append(
-            f'{comment["username"]}: {comment["body"]}'
+        for comment in comments:
+            conversation.append(
+                f'{comment["username"]}: {comment["body"]}'
         )
 
     prompt = f"""
