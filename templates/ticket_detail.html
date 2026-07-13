@@ -15,6 +15,16 @@
   </div>
 
   <p>{{ ticket["description"] }}</p>
+  <div class="card" style="margin-top:20px;">
+    <h3>AI Ticket Summary</h3>
+
+    <button id="summary-btn">
+        Generate Summary
+    </button>
+
+    <pre id="summary-output"
+        style="white-space:pre-wrap;margin-top:15px;"></pre>
+</div>
 
   {% if ticket["resolution_notes"] %}
     <div class="resolution">
@@ -144,4 +154,25 @@
     <p class="meta">No activity recorded.</p>
   {% endif %}
 </section>
+<script>
+
+document
+.getElementById("summary-btn")
+.addEventListener("click", async () => {
+
+    const output = document.getElementById("summary-output");
+
+    output.textContent = "Generating summary...";
+
+    const response = await fetch(
+        "{{ url_for('ticket_summary', ticket_id=ticket['id']) }}"
+    );
+
+    const data = await response.json();
+
+    output.textContent = data.summary;
+
+});
+
+</script>
 {% endblock %}

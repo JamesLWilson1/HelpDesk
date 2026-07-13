@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import uuid
 from functools import wraps
+from openai import OpenAI
 
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
@@ -17,6 +18,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,50}$")
 MAX_TITLE_LENGTH = 120
@@ -193,7 +195,7 @@ def create_app(test_config=None):
         filtered = [r for r in recipients if r]
         if not app.config.get("MAIL_DEFAULT_SENDER") or not filtered:
             return
-
+        
         def _send():
             with app.app_context():
                 try:
@@ -203,6 +205,62 @@ def create_app(test_config=None):
                     pass
 
         threading.Thread(target=_send, daemon=True).start()
+        
+    def generate_ticket_summary(ticket, comments):
+        if not os.getenv("OPENAI_API_KEY"):
+        return "OpenAI API key is not configured."
+
+    conversation = []
+
+    for comment in comments:
+        conversation.append(
+            f'{comment["username"]}: {comment["body"]}'
+        )
+
+    prompt = f"""
+You are an IT helpdesk assistant.
+
+Summarize this support ticket in 4-8 concise bullet points.
+
+Include:
+- Customer problem
+- Important troubleshooting already performed
+- Current status
+- Outstanding issues
+- Recommended next step
+
+Ticket
+
+Title:
+{ticket["title"]}
+
+Category:
+{ticket["category"]}
+
+Priority:
+{ticket["priority"]}
+
+Status:
+{ticket["status"]}
+
+Description:
+{ticket["description"]}
+
+Comments:
+
+{chr(10).join(conversation)}
+"""
+
+    try:
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+        )
+
+        return response.output_text
+
+    except Exception as e:
+        return f"Unable to generate summary: {e}"
 
     def log_action(ticket_id, action, detail=""):
         execute(
@@ -251,6 +309,7 @@ def create_app(test_config=None):
         return ticket
 
     init_db()
+    
 
     @app.before_request
     def before_request():
@@ -511,6 +570,29 @@ def create_app(test_config=None):
             activity=activity,
             admins=admins,
         )
+        
+    @app.route("/tickets/<int:ticket_id>/summary")
+    @login_required
+    def ticket_summary(ticket_id):
+
+        ticket = get_ticket(ticket_id)
+
+    comments = query_all(
+        """
+        SELECT comments.*, users.username
+        FROM comments
+        JOIN users ON users.id = comments.user_id
+        WHERE ticket_id = ?
+        ORDER BY comments.created_at ASC
+        """,
+        (ticket_id,),
+    )
+
+    summary = generate_ticket_summary(ticket, comments)
+
+    return {
+        "summary": summary
+    }
 
     @app.route("/tickets/<int:ticket_id>/edit", methods=("GET", "POST"))
     @login_required
