@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="notifications-header">
+  <h2>Notifications</h2>
+  {% if notifications %}
+  <form method="post" action="{{ url_for('mark_all_notifications_read') }}" style="display: inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-secondary">Mark All Read</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if notifications %}
+<div class="notifications-list">
+  {% for notification in notifications %}
+  <div class="notification-item {% if not notification.is_read %}unread{% endif %}">
+    <div class="notification-content">
+      <div class="notification-type">{{ notification.type.replace('_', ' ').title() }}</div>
+      <div class="notification-message">
+        <a href="{{ url_for('ticket_detail', ticket_id=notification.ticket_id) }}">
+          {{ notification.message }}
+        </a>
+      </div>
+      <div class="notification-meta">
+        <span class="notification-ticket">Ticket #{{ notification.ticket_id }}: {{ notification.ticket_title }}</span>
+        <span class="notification-time">{{ notification.created_at[:16].replace('T', ' ') }}</span>
+      </div>
+    </div>
+    {% if not notification.is_read %}
+    <form method="post" action="{{ url_for('mark_notification_read', notification_id=notification.id) }}" class="notification-action">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn-small">Mark Read</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="{{ url_for('notifications', page=page-1) }}">&laquo; Prev</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}
+    <a href="{{ url_for('notifications', page=page+1) }}">Next &raquo;</a>
+  {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<p class="no-notifications">You have no notifications.</p>
+{% endif %}
+
+{% endblock %}

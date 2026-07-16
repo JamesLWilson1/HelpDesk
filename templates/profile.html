@@ -36,4 +36,31 @@
     <button type="submit">Update password</button>
   </form>
 </section>
+
+<section class="card">
+  <h3>Email Notification Preferences</h3>
+  <p class="meta">Choose which email notifications you'd like to receive. In-app notifications are always enabled.</p>
+  <form method="post" action="{{ url_for('update_notification_preferences') }}" class="stack narrow">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="checkbox-label">
+      <input type="checkbox" name="email_on_assign" {% if g.user['email_on_assign'] %}checked{% endif %}>
+      Email when a ticket is assigned to me
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="email_on_comment" {% if g.user['email_on_comment'] %}checked{% endif %}>
+      Email when someone comments on my tickets
+    </label>
+    <label class="checkbox-label">
+      <input type="checkbox" name="email_on_status" {% if g.user['email_on_status'] %}checked{% endif %}>
+      Email when ticket status changes
+    </label>
+    {% if g.user["role"] == "admin" %}
+    <label class="checkbox-label">
+      <input type="checkbox" name="email_on_new_ticket" {% if g.user['email_on_new_ticket'] %}checked{% endif %}>
+      Email when new tickets are created
+    </label>
+    {% endif %}
+    <button type="submit">Save Preferences</button>
+  </form>
+</section>
 {% endblock %}

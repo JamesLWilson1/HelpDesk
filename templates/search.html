@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Advanced Search</h2>
+
+<form method="get" action="{{ url_for('advanced_search') }}" class="search-form">
+    <div class="search-grid">
+        <div class="search-field">
+            <label for="keywords">Keywords</label>
+            <input 
+                type="text" 
+                id="keywords" 
+                name="keywords" 
+                value="{{ keywords }}" 
+                placeholder="Search title, description, category..."
+            >
+        </div>
+
+        <div class="search-field">
+            <label for="status">Status</label>
+            <select id="status" name="status">
+                <option value="">All Statuses</option>
+                <option value="open" {% if status == 'open' %}selected{% endif %}>Open</option>
+                <option value="in_progress" {% if status == 'in_progress' %}selected{% endif %}>In Progress</option>
+                <option value="closed" {% if status == 'closed' %}selected{% endif %}>Closed</option>
+            </select>
+        </div>
+
+        <div class="search-field">
+            <label for="priority">Priority</label>
+            <select id="priority" name="priority">
+                <option value="">All Priorities</option>
+                <option value="low" {% if priority == 'low' %}selected{% endif %}>Low</option>
+                <option value="medium" {% if priority == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="high" {% if priority == 'high' %}selected{% endif %}>High</option>
+            </select>
+        </div>
+
+        <div class="search-field">
+            <label for="category">Category</label>
+            <select id="category" name="category">
+                <option value="">All Categories</option>
+                {% for cat in categories %}
+                <option value="{{ cat }}" {% if category == cat %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="search-field">
+            <label for="assigned_to">Assigned To</label>
+            <select id="assigned_to" name="assigned_to">
+                <option value="">All Assignees</option>
+                <option value="unassigned" {% if assigned_to == 'unassigned' %}selected{% endif %}>Unassigned</option>
+                {% for user in users %}
+                <option value="{{ user.id }}" {% if assigned_to == user.id|string %}selected{% endif %}>
+                    {{ user.username }}{% if user.role == 'admin' %} (Admin){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="search-field">
+            <label for="created_by">Created By</label>
+            <select id="created_by" name="created_by">
+                <option value="">All Users</option>
+                {% for user in users %}
+                <option value="{{ user.id }}" {% if created_by == user.id|string %}selected{% endif %}>
+                    {{ user.username }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="search-field">
+            <label for="created_from">Created From</label>
+            <input 
+                type="date" 
+                id="created_from" 
+                name="created_from" 
+                value="{{ created_from }}"
+            >
+        </div>
+
+        <div class="search-field">
+            <label for="created_to">Created To</label>
+            <input 
+                type="date" 
+                id="created_to" 
+                name="created_to" 
+                value="{{ created_to }}"
+            >
+        </div>
+
+        <div class="search-field">
+            <label for="updated_from">Updated From</label>
+            <input 
+                type="date" 
+                id="updated_from" 
+                name="updated_from" 
+                value="{{ updated_from }}"
+            >
+        </div>
+
+        <div class="search-field">
+            <label for="updated_to">Updated To</label>
+            <input 
+                type="date" 
+                id="updated_to" 
+                name="updated_to" 
+                value="{{ updated_to }}"
+            >
+        </div>
+    </div>
+
+    <div class="search-actions">
+        <button type="submit" class="btn btn-primary">Search</button>
+        <a href="{{ url_for('advanced_search') }}" class="btn btn-secondary">Clear Filters</a>
+    </div>
+</form>
+
+{% if request.args %}
+<div class="search-results">
+    <h3>Search Results</h3>
+    <p class="results-count">Found {{ total_results }} ticket{{ 's' if total_results != 1 else '' }}</p>
+    
+    {% if results %}
+    <table class="ticket-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Created By</th>
+                <th>Assigned To</th>
+                <th>Updated</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ticket in results %}
+            <tr>
+                <td>{{ ticket.id }}</td>
+                <td>
+                    <a href="{{ url_for('ticket_detail', ticket_id=ticket.id) }}">
+                        {{ ticket.title }}
+                    </a>
+                </td>
+                <td>{{ ticket.category }}</td>
+                <td>
+                    <span class="status-badge status-{{ ticket.status }}">
+                        {{ ticket.status.replace('_', ' ').title() }}
+                    </span>
+                </td>
+                <td>
+                    <span class="priority-badge priority-{{ ticket.priority }}">
+                        {{ ticket.priority.title() }}
+                    </span>
+                </td>
+                <td>{{ ticket.owner_username }}</td>
+                <td>{{ ticket.assignee_username or 'Unassigned' }}</td>
+                <td>{{ ticket.updated_at[:16].replace('T', ' ') }}</td>
+                <td>
+                    <a href="{{ url_for('ticket_detail', ticket_id=ticket.id) }}" class="btn-small">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="no-results">No tickets found matching your search criteria.</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -20,6 +20,41 @@
   <canvas id="statsChart" width="400" height="200"></canvas>
 </section>
 
+<section class="card stats-metrics">
+  <h3>Key Metrics</h3>
+  <div class="metrics-grid">
+    <div class="metric">
+      <div class="metric-value">{{ "%.1f"|format(avg_resolution) }}</div>
+      <div class="metric-label">Avg. Resolution Time (days)</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">{{ stats.open + stats.in_progress + stats.closed }}</div>
+      <div class="metric-label">Total Tickets</div>
+    </div>
+    <div class="metric">
+      <div class="metric-value">{{ category_stats|length }}</div>
+      <div class="metric-label">Categories</div>
+    </div>
+  </div>
+</section>
+
+<div class="charts-row">
+  <section class="card chart-container">
+    <h3>Tickets by Category</h3>
+    <canvas id="categoryChart" width="400" height="250"></canvas>
+  </section>
+
+  <section class="card chart-container">
+    <h3>Tickets by Priority</h3>
+    <canvas id="priorityChart" width="400" height="250"></canvas>
+  </section>
+</div>
+
+<section class="card chart-container-wide">
+  <h3>Last 30 Days Trend</h3>
+  <canvas id="trendChart" width="800" height="250"></canvas>
+</section>
+
 <section class="card">
   <h2>{{ "All tickets" if g.user["role"] == "admin" else "My tickets" }}</h2>
   <form method="get" class="filters">
@@ -119,6 +154,7 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
+// Status Chart (Doughnut)
 const ctx = document.getElementById('statsChart');
 const total = {{ stats.open }} + {{ stats.in_progress }} + {{ stats.closed }};
 
@@ -160,6 +196,136 @@ if (total > 0) {
   });
 } else {
   ctx.parentElement.innerHTML = '<p class="meta">No tickets yet. Create your first ticket to see stats.</p>';
+}
+
+// Category Chart (Bar)
+const categoryCtx = document.getElementById('categoryChart');
+const categoryData = [
+  {% for cat in category_stats %}
+    { category: '{{ cat.category }}', count: {{ cat.count }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+if (categoryData.length > 0) {
+  new Chart(categoryCtx, {
+    type: 'bar',
+    data: {
+      labels: categoryData.map(d => d.category),
+      datasets: [{
+        label: 'Tickets',
+        data: categoryData.map(d => d.count),
+        backgroundColor: '#8b5cf6',
+        borderRadius: 6
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1 }
+        }
+      }
+    }
+  });
+} else {
+  categoryCtx.parentElement.innerHTML = '<p class="meta">No category data available.</p>';
+}
+
+// Priority Chart (Doughnut)
+const priorityCtx = document.getElementById('priorityChart');
+const priorityData = [
+  {% for p in priority_stats %}
+    { priority: '{{ p.priority }}', count: {{ p.count }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+if (priorityData.length > 0) {
+  new Chart(priorityCtx, {
+    type: 'doughnut',
+    data: {
+      labels: priorityData.map(d => d.priority.charAt(0).toUpperCase() + d.priority.slice(1)),
+      datasets: [{
+        data: priorityData.map(d => d.count),
+        backgroundColor: ['#ef4444', '#f59e0b', '#22c55e'],
+        borderWidth: 2,
+        borderColor: '#fff'
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            padding: 15,
+            font: { size: 13 }
+          }
+        }
+      }
+    }
+  });
+} else {
+  priorityCtx.parentElement.innerHTML = '<p class="meta">No priority data available.</p>';
+}
+
+// Trend Chart (Line)
+const trendCtx = document.getElementById('trendChart');
+const trendData = [
+  {% for t in trend_data %}
+    { date: '{{ t.date }}', count: {{ t.count }} }{% if not loop.last %},{% endif %}
+  {% endfor %}
+];
+
+if (trendData.length > 0) {
+  // Fill in missing dates for last 30 days
+  const dates = [];
+  const counts = new Map(trendData.map(d => [d.date, d.count]));
+  const today = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().split('T')[0];
+    dates.push({
+      date: dateStr,
+      count: counts.get(dateStr) || 0
+    });
+  }
+
+  new Chart(trendCtx, {
+    type: 'line',
+    data: {
+      labels: dates.map(d => d.date.slice(5)), // MM-DD format
+      datasets: [{
+        label: 'Tickets Created',
+        data: dates.map(d => d.count),
+        borderColor: '#3b82f6',
+        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1 }
+        }
+      }
+    }
+  });
+} else {
+  trendCtx.parentElement.innerHTML = '<p class="meta">No trend data available yet.</p>';
 }
 </script>
 {% endblock %}

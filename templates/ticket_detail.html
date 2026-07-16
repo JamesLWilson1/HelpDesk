@@ -80,23 +80,70 @@
 <section class="card">
   <h3>Attachments</h3>
   <form method="post" action="{{ url_for('upload_attachment', ticket_id=ticket['id']) }}"
-        enctype="multipart/form-data" class="stack">
+        enctype="multipart/form-data" class="stack" id="upload-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>
-      Upload file <span class="meta">(max 5 MB · .png .jpg .jpeg .gif .webp .pdf .txt .log .csv)</span>
-      <input type="file" name="file" accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.log,.csv">
-    </label>
-    <button type="submit">Upload</button>
+    
+    <div class="file-upload-area" id="drop-zone">
+      <div class="upload-prompt">
+        <span class="upload-icon">📁</span>
+        <p><strong>Drag and drop files here</strong> or click to browse</p>
+        <p class="meta">Max 5 MB per file · Multiple files supported</p>
+        <p class="meta">.png .jpg .jpeg .gif .webp .pdf .txt .log .csv</p>
+      </div>
+      <input type="file" name="file" id="file-input" multiple
+             accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.log,.csv" style="display:none;">
+    </div>
+    
+    <div id="file-preview" class="file-preview"></div>
+    
+    <button type="submit" id="upload-btn" style="display:none;">Upload Selected Files</button>
   </form>
 
   {% if attachments %}
     <ul class="attachment-list">
       {% for att in attachments %}
-        <li class="attachment-row">
-          <a href="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}">
-            {{ att["original_name"] }}
-          </a>
-          <span class="meta">{{ att["uploader"] }} · {{ (att["size"] / 1024) | round(1) }} KB</span>
+        <li class="attachment-item">
+          <div class="attachment-content">
+            {% set ext = att["original_name"].split('.')[-1].lower() %}
+            {% if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] %}
+              <div class="attachment-preview">
+                <a href="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" target="_blank">
+                  <img src="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" 
+                       alt="{{ att['original_name'] }}" 
+                       loading="lazy">
+                </a>
+              </div>
+            {% endif %}
+            <div class="attachment-info">
+              <div class="attachment-name">
+                {% if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] %}
+                  🖼️
+                {% elif ext == 'pdf' %}
+                  📄
+                {% elif ext in ['txt', 'log'] %}
+                  📝
+                {% elif ext == 'csv' %}
+                  📊
+                {% else %}
+                  📎
+                {% endif %}
+                <a href="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" 
+                   {% if ext not in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'] %}download{% endif %}>
+                  {{ att["original_name"] }}
+                </a>
+              </div>
+              <div class="attachment-meta">
+                {{ att["uploader"] }} · 
+                {% if att["size"] < 1024 %}
+                  {{ att["size"] }} bytes
+                {% elif att["size"] < 1024 * 1024 %}
+                  {{ (att["size"] / 1024) | round(1) }} KB
+                {% else %}
+                  {{ (att["size"] / 1024 / 1024) | round(2) }} MB
+                {% endif %}
+              </div>
+            </div>
+          </div>
           {% if g.user["role"] == "admin" or ticket["user_id"] == g.user["id"] %}
             <form method="post"
                   action="{{ url_for('delete_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}"
@@ -113,6 +160,119 @@
     <p class="meta">No attachments yet.</p>
   {% endif %}
 </section>
+
+<script>
+// Drag and drop functionality
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const filePreview = document.getElementById('file-preview');
+const uploadBtn = document.getElementById('upload-btn');
+const uploadForm = document.getElementById('upload-form');
+
+// Click to browse
+dropZone.addEventListener('click', () => fileInput.click());
+
+// Prevent default drag behaviors
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+  dropZone.addEventListener(eventName, preventDefaults, false);
+  document.body.addEventListener(eventName, preventDefaults, false);
+});
+
+function preventDefaults(e) {
+  e.preventDefault();
+  e.stopPropagation();
+}
+
+// Highlight drop zone when dragging over
+['dragenter', 'dragover'].forEach(eventName => {
+  dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-over'), false);
+});
+
+['dragleave', 'drop'].forEach(eventName => {
+  dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-over'), false);
+});
+
+// Handle dropped files
+dropZone.addEventListener('drop', handleDrop, false);
+
+function handleDrop(e) {
+  const dt = e.dataTransfer;
+  const files = dt.files;
+  fileInput.files = files;
+  updatePreview(files);
+}
+
+// Handle selected files
+fileInput.addEventListener('change', function() {
+  updatePreview(this.files);
+});
+
+function updatePreview(files) {
+  filePreview.innerHTML = '';
+  
+  if (files.length === 0) {
+    uploadBtn.style.display = 'none';
+    return;
+  }
+  
+  uploadBtn.style.display = 'block';
+  
+  const allowedExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.txt', '.log', '.csv'];
+  
+  Array.from(files).forEach((file, index) => {
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    const isValid = allowedExts.includes(ext);
+    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+    
+    const previewItem = document.createElement('div');
+    previewItem.className = 'file-preview-item' + (isValid ? '' : ' invalid');
+    
+    // File icon/preview
+    if (isImage && isValid) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const img = document.createElement('img');
+        img.src = e.target.result;
+        img.className = 'preview-thumbnail';
+        previewItem.insertBefore(img, previewItem.firstChild);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const icon = document.createElement('span');
+      icon.className = 'preview-icon';
+      icon.textContent = ext === '.pdf' ? '📄' : ext === '.csv' ? '📊' : ext.match(/\.(txt|log)/) ? '📝' : '📎';
+      previewItem.appendChild(icon);
+    }
+    
+    // File info
+    const info = document.createElement('div');
+    info.className = 'preview-info';
+    
+    const name = document.createElement('div');
+    name.className = 'preview-name';
+    name.textContent = file.name;
+    if (!isValid) {
+      name.textContent += ' ⚠️ Invalid file type';
+    }
+    
+    const size = document.createElement('div');
+    size.className = 'preview-size';
+    const sizeKB = (file.size / 1024).toFixed(1);
+    const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+    size.textContent = file.size < 1024 * 1024 ? `${sizeKB} KB` : `${sizeMB} MB`;
+    if (file.size > 5 * 1024 * 1024) {
+      size.textContent += ' ⚠️ Too large (max 5 MB)';
+      previewItem.classList.add('invalid');
+    }
+    
+    info.appendChild(name);
+    info.appendChild(size);
+    previewItem.appendChild(info);
+    
+    filePreview.appendChild(previewItem);
+  });
+}
+</script>
 
 <section class="card">
   <h3>Comments</h3>

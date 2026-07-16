@@ -142,6 +142,18 @@ def create_app(test_config=None):
                 FOREIGN KEY (ticket_id) REFERENCES tickets (id),
                 FOREIGN KEY (user_id) REFERENCES users (id)
             );
+
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                ticket_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+            );
             """
         )
         db.commit()
@@ -157,6 +169,27 @@ def create_app(test_config=None):
             db.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Migrate: add email preference columns
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN email_on_assign INTEGER NOT NULL DEFAULT 1")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN email_on_comment INTEGER NOT NULL DEFAULT 1")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN email_on_status INTEGER NOT NULL DEFAULT 1")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
+        try:
+            db.execute("ALTER TABLE users ADD COLUMN email_on_new_ticket INTEGER NOT NULL DEFAULT 1")
+            db.commit()
+        except sqlite3.OperationalError:
+            pass
         db.close()
 
     def query_one(query, params=()):
@@ -213,6 +246,24 @@ def create_app(test_config=None):
                     pass
 
         threading.Thread(target=_send, daemon=True).start()
+
+    def create_notification(user_id, ticket_id, notification_type, message):
+        """Create an in-app notification for a user."""
+        execute(
+            "INSERT INTO notifications (user_id, ticket_id, type, message) VALUES (?, ?, ?, ?)",
+            (user_id, ticket_id, notification_type, message)
+        )
+
+    def notify_user(user_id, ticket_id, notification_type, message, email_subject=None, email_body=None, email_pref_field=None):
+        """Send both in-app notification and email (if preferences allow)."""
+        # Create in-app notification
+        create_notification(user_id, ticket_id, notification_type, message)
+        
+        # Send email if user has preference enabled
+        if email_subject and email_body and email_pref_field:
+            user = query_one(f"SELECT email, {email_pref_field} FROM users WHERE id = ?", (user_id,))
+            if user and user["email"] and user[email_pref_field]:
+                send_notification(email_subject, [user["email"]], email_body)
         
     def generate_ticket_summary(ticket, comments):
         if not OPENAI_AVAILABLE or not os.getenv("OPENAI_API_KEY"):
@@ -324,6 +375,14 @@ Comments:
         load_logged_in_user()
         if request.method == "GET":
             new_csrf_token()
+        # Load unread notification count for logged-in users
+        if g.user:
+            g.unread_notifications = query_one(
+                "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0",
+                (g.user["id"],)
+            )["count"]
+        else:
+            g.unread_notifications = 0
 
     @app.teardown_appcontext
     def teardown_db(error):
@@ -460,6 +519,32 @@ Comments:
                 "closed": query_one("SELECT COUNT(*) AS count FROM tickets WHERE status = 'closed'")["count"],
             }
             categories = [r["category"] for r in query_all("SELECT DISTINCT category FROM tickets ORDER BY category")]
+            
+            # Enhanced statistics
+            category_stats = query_all(
+                "SELECT category, COUNT(*) as count FROM tickets GROUP BY category ORDER BY count DESC LIMIT 10"
+            )
+            priority_stats = query_all(
+                "SELECT priority, COUNT(*) as count FROM tickets GROUP BY priority ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END"
+            )
+            # Last 30 days trend
+            trend_data = query_all(
+                """
+                SELECT DATE(created_at) as date, COUNT(*) as count 
+                FROM tickets 
+                WHERE created_at >= DATE('now', '-30 days')
+                GROUP BY DATE(created_at)
+                ORDER BY date
+                """
+            )
+            # Average resolution time (in days) for closed tickets
+            avg_resolution = query_one(
+                """
+                SELECT AVG(JULIANDAY(updated_at) - JULIANDAY(created_at)) as avg_days
+                FROM tickets
+                WHERE status = 'closed'
+                """
+            )["avg_days"] or 0
         else:
             stats = {
                 "open": query_one(
@@ -479,6 +564,35 @@ Comments:
                 "SELECT DISTINCT category FROM tickets WHERE user_id = ? ORDER BY category",
                 (g.user["id"],),
             )]
+            
+            # Enhanced statistics for regular users
+            category_stats = query_all(
+                "SELECT category, COUNT(*) as count FROM tickets WHERE user_id = ? GROUP BY category ORDER BY count DESC LIMIT 10",
+                (g.user["id"],)
+            )
+            priority_stats = query_all(
+                "SELECT priority, COUNT(*) as count FROM tickets WHERE user_id = ? GROUP BY priority ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END",
+                (g.user["id"],)
+            )
+            trend_data = query_all(
+                """
+                SELECT DATE(created_at) as date, COUNT(*) as count 
+                FROM tickets 
+                WHERE user_id = ? AND created_at >= DATE('now', '-30 days')
+                GROUP BY DATE(created_at)
+                ORDER BY date
+                """,
+                (g.user["id"],)
+            )
+            avg_resolution = query_one(
+                """
+                SELECT AVG(JULIANDAY(updated_at) - JULIANDAY(created_at)) as avg_days
+                FROM tickets
+                WHERE status = 'closed' AND user_id = ?
+                """,
+                (g.user["id"],)
+            )["avg_days"] or 0
+            
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
         return render_template(
             "dashboard.html",
@@ -491,9 +605,148 @@ Comments:
             categories=categories,
             sort=sort,
             stats=stats,
+            category_stats=category_stats,
+            priority_stats=priority_stats,
+            trend_data=trend_data,
+            avg_resolution=avg_resolution,
             page=page,
             total_pages=total_pages,
             total=total,
+        )
+
+    @app.route("/search")
+    @login_required
+    def advanced_search():
+        # Get search parameters
+        keywords = request.args.get("keywords", "").strip()
+        status = request.args.get("status", "").strip()
+        priority = request.args.get("priority", "").strip()
+        category = request.args.get("category", "").strip()
+        assigned_to = request.args.get("assigned_to", "").strip()
+        created_by = request.args.get("created_by", "").strip()
+        created_from = request.args.get("created_from", "").strip()
+        created_to = request.args.get("created_to", "").strip()
+        updated_from = request.args.get("updated_from", "").strip()
+        updated_to = request.args.get("updated_to", "").strip()
+        
+        # Validate inputs
+        if status and status not in {"open", "in_progress", "closed"}:
+            status = ""
+        if priority and priority not in {"low", "medium", "high"}:
+            priority = ""
+        
+        # Get categories and users for dropdowns
+        categories = [r["category"] for r in query_all("SELECT DISTINCT category FROM tickets ORDER BY category")]
+        users = query_all("SELECT id, username, role FROM users ORDER BY username")
+        
+        # Build search query
+        where_parts = []
+        where_params = []
+        
+        # Non-admins can only see their own tickets
+        if g.user["role"] != "admin":
+            where_parts.append("tickets.user_id = ?")
+            where_params.append(g.user["id"])
+        
+        # Keyword search (title, description, category)
+        if keywords:
+            where_parts.append(
+                "(tickets.title LIKE ? ESCAPE '\\' OR tickets.description LIKE ? ESCAPE '\\' OR tickets.category LIKE ? ESCAPE '\\')"
+            )
+            wildcard = f"%{escape_like(keywords)}%"
+            where_params.extend([wildcard, wildcard, wildcard])
+        
+        # Status filter
+        if status:
+            where_parts.append("tickets.status = ?")
+            where_params.append(status)
+        
+        # Priority filter
+        if priority:
+            where_parts.append("tickets.priority = ?")
+            where_params.append(priority)
+        
+        # Category filter
+        if category:
+            where_parts.append("tickets.category = ?")
+            where_params.append(category)
+        
+        # Assigned to filter
+        if assigned_to:
+            if assigned_to == "unassigned":
+                where_parts.append("tickets.assigned_to IS NULL")
+            else:
+                try:
+                    assigned_to_id = int(assigned_to)
+                    where_parts.append("tickets.assigned_to = ?")
+                    where_params.append(assigned_to_id)
+                except ValueError:
+                    pass
+        
+        # Created by filter
+        if created_by:
+            try:
+                created_by_id = int(created_by)
+                where_parts.append("tickets.user_id = ?")
+                where_params.append(created_by_id)
+            except ValueError:
+                pass
+        
+        # Date range filters
+        if created_from:
+            where_parts.append("DATE(tickets.created_at) >= DATE(?)")
+            where_params.append(created_from)
+        if created_to:
+            where_parts.append("DATE(tickets.created_at) <= DATE(?)")
+            where_params.append(created_to)
+        if updated_from:
+            where_parts.append("DATE(tickets.updated_at) >= DATE(?)")
+            where_params.append(updated_from)
+        if updated_to:
+            where_parts.append("DATE(tickets.updated_at) <= DATE(?)")
+            where_params.append(updated_to)
+        
+        where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        
+        # Execute search
+        results = []
+        total_results = 0
+        if where_parts or request.args:  # Only search if filters applied or page visited with params
+            total_results = query_one(
+                "SELECT COUNT(*) AS count FROM tickets" + where_clause,
+                tuple(where_params),
+            )["count"]
+            
+            results = query_all(
+                """
+                SELECT tickets.*, 
+                       owner.username AS owner_username, 
+                       assignee.username AS assignee_username
+                FROM tickets
+                JOIN users AS owner ON owner.id = tickets.user_id
+                LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
+                """
+                + where_clause
+                + " ORDER BY tickets.updated_at DESC LIMIT 100",
+                tuple(where_params),
+            )
+        
+        return render_template(
+            "search.html",
+            results=results,
+            total_results=total_results,
+            keywords=keywords,
+            status=status,
+            priority=priority,
+            category=category,
+            assigned_to=assigned_to,
+            created_by=created_by,
+            created_from=created_from,
+            created_to=created_to,
+            updated_from=updated_from,
+            updated_to=updated_to,
+            categories=categories,
+            users=users,
         )
 
     @app.route("/tickets/new", methods=("GET", "POST"))
@@ -518,18 +771,23 @@ Comments:
                     (title, description, category, priority, g.user["id"], due_date),
                 )
                 new_ticket_id = cursor.lastrowid
-                admin_emails = [
-                    row["email"] for row in
-                    query_all("SELECT email FROM users WHERE role = 'admin' AND email != ''")
-                ]
+                
+                # Notify admins of new ticket
+                admins = query_all("SELECT id, email, email_on_new_ticket FROM users WHERE role = 'admin'")
                 ticket_url = url_for("ticket_detail", ticket_id=new_ticket_id, _external=True)
-                send_notification(
-                    f"[HelpDesk] New ticket #{new_ticket_id}: {title}",
-                    admin_emails,
-                    f"A new ticket has been submitted by {g.user['username']}.\n\n"
-                    f"Title: {title}\nCategory: {category}\nPriority: {priority}\n\n"
-                    f"View ticket: {ticket_url}",
-                )
+                for admin in admins:
+                    notify_user(
+                        admin["id"],
+                        new_ticket_id,
+                        "new_ticket",
+                        f"New ticket submitted by {g.user['username']}: {title}",
+                        f"[HelpDesk] New ticket #{new_ticket_id}: {title}",
+                        f"A new ticket has been submitted by {g.user['username']}.\n\n"
+                        f"Title: {title}\nCategory: {category}\nPriority: {priority}\n\n"
+                        f"View ticket: {ticket_url}",
+                        "email_on_new_ticket"
+                    )
+                
                 log_action(new_ticket_id, "ticket_created", "Ticket created")
                 flash("Ticket created successfully.", "success")
                 return redirect(url_for("ticket_detail", ticket_id=new_ticket_id))
@@ -646,26 +904,38 @@ Comments:
                 (ticket["id"], g.user["id"], body),
             )
             execute("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (ticket_id,))
-            comment_recipients = []
+            
+            comment_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
+            email_body = f"{g.user['username']} added a comment on ticket #{ticket_id}: {ticket['title']}\n\n{body}\n\nView ticket: {comment_url}"
+            
+            # Notify ticket owner if they're not the commenter
             if ticket["user_id"] != g.user["id"]:
-                owner = query_one("SELECT email FROM users WHERE id = ?", (ticket["user_id"],))
-                if owner and owner["email"]:
-                    comment_recipients.append(owner["email"])
+                notify_user(
+                    ticket["user_id"],
+                    ticket_id,
+                    "comment_added",
+                    f"New comment on ticket #{ticket_id} ({ticket['title']}) by {g.user['username']}",
+                    f"[HelpDesk] New comment on ticket #{ticket_id}: {ticket['title']}",
+                    email_body,
+                    "email_on_comment"
+                )
+            
+            # Notify assignee if they're not the commenter and not the owner
             if (
                 ticket["assigned_to"]
                 and ticket["assigned_to"] != g.user["id"]
                 and ticket["assigned_to"] != ticket["user_id"]
             ):
-                assignee = query_one("SELECT email FROM users WHERE id = ?", (ticket["assigned_to"],))
-                if assignee and assignee["email"]:
-                    comment_recipients.append(assignee["email"])
-            comment_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
-            send_notification(
-                f"[HelpDesk] New comment on ticket #{ticket_id}: {ticket['title']}",
-                comment_recipients,
-                f"{g.user['username']} added a comment on ticket #{ticket_id}: {ticket['title']}\n\n"
-                f"{body}\n\nView ticket: {comment_url}",
-            )
+                notify_user(
+                    ticket["assigned_to"],
+                    ticket_id,
+                    "comment_added",
+                    f"New comment on ticket #{ticket_id} ({ticket['title']}) by {g.user['username']}",
+                    f"[HelpDesk] New comment on ticket #{ticket_id}: {ticket['title']}",
+                    email_body,
+                    "email_on_comment"
+                )
+            
             log_action(ticket_id, "comment_added", "Comment added")
             flash("Comment added.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
@@ -692,16 +962,20 @@ Comments:
         )
         if assignee:
             log_action(ticket_id, "assigned", f"Assigned to {assignee['username']}")
-        else:
-            log_action(ticket_id, "assigned", "Assignment cleared")
-        if assignee and assignee["email"]:
+            # Notify the assignee
             assign_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
-            send_notification(
+            notify_user(
+                assignee["id"],
+                ticket_id,
+                "assigned",
+                f"Ticket #{ticket_id} ({ticket['title']}) has been assigned to you",
                 f"[HelpDesk] Ticket #{ticket_id} assigned to you",
-                [assignee["email"]],
                 f"Ticket #{ticket_id}: {ticket['title']} has been assigned to you by {g.user['username']}.\n\n"
                 f"View ticket: {assign_url}",
+                "email_on_assign"
             )
+        else:
+            log_action(ticket_id, "assigned", "Assignment cleared")
         flash("Ticket assignment updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
@@ -724,16 +998,19 @@ Comments:
         )
         if ticket["status"] != status:
             log_action(ticket_id, "status_changed", f"Status changed from {ticket['status']} to {status}")
-        owner = query_one("SELECT email FROM users WHERE id = ?", (ticket["user_id"],))
-        if owner and owner["email"]:
+            # Notify ticket owner of status change
             status_url = url_for("ticket_detail", ticket_id=ticket_id, _external=True)
-            send_notification(
+            notify_user(
+                ticket["user_id"],
+                ticket_id,
+                "status_changed",
+                f"Ticket #{ticket_id} ({ticket['title']}) status changed to {status}",
                 f"[HelpDesk] Ticket #{ticket_id} status updated: {status}",
-                [owner["email"]],
                 f"Your ticket #{ticket_id}: {ticket['title']} has been updated.\n\n"
                 f"New status: {status}\n"
                 + (f"Resolution notes: {resolution_notes}\n" if resolution_notes else "")
                 + f"\nView ticket: {status_url}",
+                "email_on_status"
             )
         flash("Ticket status updated.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
@@ -759,25 +1036,48 @@ Comments:
     def upload_attachment(ticket_id):
         validate_csrf()
         get_ticket(ticket_id)
-        file = request.files.get("file")
-        if not file or not file.filename:
+        files = request.files.getlist("file")
+        if not files or all(not f.filename for f in files):
             flash("No file selected.", "error")
             return redirect(url_for("ticket_detail", ticket_id=ticket_id))
-        ext = os.path.splitext(secure_filename(file.filename))[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            flash(f"File type not allowed. Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}", "error")
-            return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+        
         upload_dir = os.path.join(app.instance_path, "uploads")
         os.makedirs(upload_dir, exist_ok=True)
-        stored_name = f"{uuid.uuid4().hex}{ext}"
-        file.save(os.path.join(upload_dir, stored_name))
-        file_size = os.path.getsize(os.path.join(upload_dir, stored_name))
-        execute(
-            "INSERT INTO attachments (ticket_id, user_id, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
-            (ticket_id, g.user["id"], stored_name, secure_filename(file.filename), file_size),
-        )
-        log_action(ticket_id, "attachment_uploaded", f"File uploaded: {secure_filename(file.filename)}")
-        flash("Attachment uploaded.", "success")
+        
+        uploaded_count = 0
+        errors = []
+        
+        for file in files:
+            if not file.filename:
+                continue
+                
+            ext = os.path.splitext(secure_filename(file.filename))[1].lower()
+            if ext not in ALLOWED_EXTENSIONS:
+                errors.append(f"{file.filename}: invalid file type")
+                continue
+            
+            try:
+                stored_name = f"{uuid.uuid4().hex}{ext}"
+                file_path = os.path.join(upload_dir, stored_name)
+                file.save(file_path)
+                file_size = os.path.getsize(file_path)
+                
+                execute(
+                    "INSERT INTO attachments (ticket_id, user_id, filename, original_name, size) VALUES (?, ?, ?, ?, ?)",
+                    (ticket_id, g.user["id"], stored_name, secure_filename(file.filename), file_size),
+                )
+                uploaded_count += 1
+            except Exception as e:
+                errors.append(f"{file.filename}: {str(e)}")
+        
+        if uploaded_count > 0:
+            log_action(ticket_id, "attachment_uploaded", f"{uploaded_count} file(s) uploaded")
+            flash(f"{uploaded_count} file(s) uploaded successfully.", "success")
+        
+        if errors:
+            for error in errors[:3]:  # Show max 3 errors
+                flash(error, "error")
+        
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
     @app.route("/tickets/<int:ticket_id>/attachments/<int:attachment_id>")
@@ -969,6 +1269,76 @@ Comments:
             )
             flash("Password updated.", "success")
         return redirect(url_for("profile"))
+
+    @app.route("/profile/notifications", methods=("POST",))
+    @login_required
+    def update_notification_preferences():
+        validate_csrf()
+        email_on_assign = 1 if request.form.get("email_on_assign") else 0
+        email_on_comment = 1 if request.form.get("email_on_comment") else 0
+        email_on_status = 1 if request.form.get("email_on_status") else 0
+        email_on_new_ticket = 1 if request.form.get("email_on_new_ticket") else 0
+        
+        execute(
+            """UPDATE users 
+               SET email_on_assign = ?, email_on_comment = ?, email_on_status = ?, email_on_new_ticket = ?
+               WHERE id = ?""",
+            (email_on_assign, email_on_comment, email_on_status, email_on_new_ticket, g.user["id"])
+        )
+        flash("Notification preferences updated.", "success")
+        return redirect(url_for("profile"))
+
+    @app.route("/notifications")
+    @login_required
+    def notifications():
+        page = max(1, int(request.args.get("page", "1")))
+        per_page = 20
+        offset = (page - 1) * per_page
+        
+        notifications_list = query_all(
+            """SELECT notifications.*, tickets.title as ticket_title
+               FROM notifications
+               JOIN tickets ON tickets.id = notifications.ticket_id
+               WHERE notifications.user_id = ?
+               ORDER BY notifications.created_at DESC
+               LIMIT ? OFFSET ?""",
+            (g.user["id"], per_page, offset)
+        )
+        
+        total = query_one(
+            "SELECT COUNT(*) as count FROM notifications WHERE user_id = ?",
+            (g.user["id"],)
+        )["count"]
+        
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        
+        return render_template(
+            "notifications.html",
+            notifications=notifications_list,
+            page=page,
+            total_pages=total_pages
+        )
+
+    @app.route("/notifications/mark-read/<int:notification_id>", methods=("POST",))
+    @login_required
+    def mark_notification_read(notification_id):
+        validate_csrf()
+        execute(
+            "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+            (notification_id, g.user["id"])
+        )
+        return redirect(request.referrer or url_for("notifications"))
+
+    @app.route("/notifications/mark-all-read", methods=("POST",))
+    @login_required
+    def mark_all_notifications_read():
+        validate_csrf()
+        execute(
+            "UPDATE notifications SET is_read = 1 WHERE user_id = ?",
+            (g.user["id"],)
+        )
+        flash("All notifications marked as read.", "success")
+        return redirect(url_for("notifications"))
 
     @app.errorhandler(429)
     def ratelimit_exceeded(e):

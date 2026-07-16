@@ -612,6 +612,377 @@ class HelpDeskAppTests(unittest.TestCase):
         # Check that Chart.js is loaded
         self.assertIn(b"chart.js", response.data)
 
+    def test_search_page_loads(self):
+        self.register("alice")
+        self.login("alice")
+        response = self.client.get("/search")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Advanced Search", response.data)
+        self.assertIn(b"Keywords", response.data)
+        self.assertIn(b"Status", response.data)
+        self.assertIn(b"Priority", response.data)
+
+    def test_search_requires_login(self):
+        response = self.client.get("/search")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.location)
+
+    def test_search_by_keywords(self):
+        self.register("alice")
+        self.login("alice")
+        self.post("/tickets/new", {"title": "Hardware Problem", "description": "Desktop not working", "category": "Hardware", "priority": "medium"}, csrf_path="/tickets/new")
+        self.post("/tickets/new", {"title": "Software Bug", "description": "App crashes", "category": "Software", "priority": "medium"}, csrf_path="/tickets/new")
+        response = self.client.get("/search?keywords=hardware")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Hardware Problem", response.data)
+        self.assertNotIn(b"Software Bug", response.data)
+        self.assertIn(b"Found 1 ticket", response.data)
+
+    def test_search_by_status(self):
+        self.register("alice")
+        self.login("alice")
+        self.create_ticket("Test Ticket")
+        # Update ticket status to closed (admin-only route)
+        token = self.dashboard_csrf()
+        self.client.post(
+            "/tickets/1/status",
+            data={"csrf_token": token, "status": "closed"},
+        )
+        response = self.client.get("/search?status=closed")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Test Ticket", response.data)
+        self.assertIn(b"Found 1 ticket", response.data)
+
+    def test_search_by_priority(self):
+        self.register("alice")
+        self.login("alice")
+        self.post("/tickets/new", {"title": "High Priority", "description": "Urgent", "category": "Other", "priority": "high"}, csrf_path="/tickets/new")
+        response = self.client.get("/search?priority=high")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"High Priority", response.data)
+
+    def test_search_by_category(self):
+        self.register("alice")
+        self.login("alice")
+        self.post("/tickets/new", {"title": "Hardware Issue", "description": "Test", "category": "Hardware", "priority": "medium"}, csrf_path="/tickets/new")
+        self.post("/tickets/new", {"title": "Network Issue", "description": "Test", "category": "Network", "priority": "medium"}, csrf_path="/tickets/new")
+        response = self.client.get("/search?category=Hardware")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Hardware Issue", response.data)
+        self.assertNotIn(b"Network Issue", response.data)
+
+    def test_search_by_assigned_to(self):
+        self.register("admin-user")  # First user becomes admin
+        self.login("admin-user")
+        self.create_ticket("Assigned Ticket")
+        # Assign ticket to admin-user (id=1)
+        token = self.dashboard_csrf()
+        self.client.post(
+            "/tickets/1/assign",
+            data={"csrf_token": token, "assigned_to": "1"},
+        )
+        # Search for tickets assigned to admin-user
+        response = self.client.get("/search?assigned_to=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Assigned Ticket", response.data)
+
+    def test_search_by_created_by(self):
+        self.register("alice")
+        self.register("bob")
+        self.login("alice")
+        self.create_ticket("Alice Ticket")
+        self.post("/logout", {}, csrf_path="/dashboard")
+        self.login("bob")
+        self.create_ticket("Bob Ticket")
+        # Alice's ID is 1
+        alice_id = 1
+        response = self.client.get(f"/search?created_by={alice_id}")
+        self.assertEqual(response.status_code, 200)
+        # Bob can't see Alice's ticket (non-admin)
+        self.assertNotIn(b"Alice Ticket", response.data)
+
+    def test_search_by_date_range(self):
+        self.register("alice")
+        self.login("alice")
+        self.create_ticket("Recent Ticket")
+        from datetime import datetime, timedelta
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        response = self.client.get(f"/search?created_from={yesterday}&created_to={today}")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Recent Ticket", response.data)
+
+    def test_search_combined_filters(self):
+        self.register("alice")
+        self.login("alice")
+        self.create_ticket("Hardware High")  # Default category is Hardware
+        self.post("/tickets/new", {"title": "Hardware Low", "description": "Test", "category": "Hardware", "priority": "low"}, csrf_path="/tickets/new")
+        response = self.client.get("/search?category=Hardware&priority=low")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Hardware Low", response.data)
+        self.assertNotIn(b"Hardware High", response.data)
+
+    def test_search_non_admin_sees_own_tickets_only(self):
+        self.register("alice")
+        self.register("bob")
+        self.login("alice")
+        self.create_ticket("Alice Ticket")
+        self.post("/logout", {}, csrf_path="/dashboard")
+        self.login("bob")
+        self.create_ticket("Bob Ticket")
+        response = self.client.get("/search?keywords=ticket")
+        self.assertEqual(response.status_code, 200)
+        # Bob should only see their own ticket
+        self.assertIn(b"Bob Ticket", response.data)
+        self.assertNotIn(b"Alice Ticket", response.data)
+
+    def test_search_admin_sees_all_tickets(self):
+        self.register("admin-user")  # First user becomes admin
+        self.register("alice")
+        self.login("alice")
+        self.create_ticket("Alice Ticket")
+        self.post("/logout", {}, csrf_path="/dashboard")
+        self.login("admin-user")
+        self.create_ticket("Admin Ticket")
+        response = self.client.get("/search?keywords=ticket")
+        self.assertEqual(response.status_code, 200)
+        # Admin should see all tickets
+        self.assertIn(b"Alice Ticket", response.data)
+        self.assertIn(b"Admin Ticket", response.data)
+
+    # Notification system tests
+    def test_notification_created_on_new_ticket(self):
+        """Admins should receive notifications when a new ticket is created."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        response = self.create_ticket("Test Ticket")
+        self.assertEqual(response.status_code, 200)
+        # Login as admin and check notifications
+        self.login("admin1")
+        response = self.client.get("/notifications")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"New ticket submitted by user1: Test Ticket", response.data)
+
+    def test_notification_created_on_assignment(self):
+        """Assigned user should receive notification when ticket is assigned."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Assignment Test")
+        # Promote user1 to admin so they can be assigned
+        self.login("admin1")
+        self.post("/admin/users/2/role", {}, csrf_path="/admin/users")  # Promote user1 to admin
+        # Assign ticket to user1
+        self.post("/tickets/1/assign", {"assigned_to": "2"}, csrf_path="/tickets/1")
+        # Login as user1 and check notifications
+        self.login("user1")
+        response = self.client.get("/notifications")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ticket #1 (Assignment Test) has been assigned to you", response.data)
+
+    def test_notification_created_on_comment(self):
+        """Ticket owner should receive notification when someone comments."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Comment Test")
+        self.login("admin1")
+        # Comment on the ticket
+        self.post("/tickets/1/comment", {"body": "This is a test comment"}, csrf_path="/tickets/1")
+        # Login as user1 and check notifications
+        self.login("user1")
+        response = self.client.get("/notifications")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"New comment on ticket #1 (Comment Test) by admin1", response.data)
+
+    def test_notification_created_on_status_change(self):
+        """Ticket owner should receive notification when status changes."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Status Test")
+        self.login("admin1")
+        # Change status
+        self.post("/tickets/1/status", {"status": "in_progress"}, csrf_path="/tickets/1")
+        # Login as user1 and check notifications
+        self.login("user1")
+        response = self.client.get("/notifications")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ticket #1 (Status Test) status changed to in_progress", response.data)
+
+    def test_mark_notification_read(self):
+        """Users should be able to mark individual notifications as read."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Mark Read Test")
+        self.login("admin1")
+        # Get notification ID
+        response = self.client.get("/notifications")
+        self.assertIn(b"New ticket submitted", response.data)
+        # Mark as read
+        self.post("/notifications/mark-read/1", {}, csrf_path="/notifications")
+        response = self.client.get("/notifications")
+        # Notification should still be there but not marked as unread
+        self.assertNotIn(b'class="notification-item unread"', response.data)
+
+    def test_mark_all_notifications_read(self):
+        """Users should be able to mark all notifications as read."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Test 1")
+        self.create_ticket("Test 2")
+        self.login("admin1")
+        # Check we have unread notifications
+        response = self.client.get("/notifications")
+        self.assertIn(b"New ticket submitted", response.data)
+        # Mark all as read
+        self.post("/notifications/mark-all-read", {}, csrf_path="/notifications")
+        response = self.client.get("/notifications")
+        # Should not have unread class anymore
+        self.assertNotIn(b'class="notification-item unread"', response.data)
+
+    def test_notification_visibility(self):
+        """Users should only see their own notifications."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("User1 Ticket")
+        self.login("admin1")
+        # Admin has notification
+        response = self.client.get("/notifications")
+        self.assertIn(b"New ticket submitted by user1", response.data)
+        # User1 should not have any notifications (they created the ticket)
+        self.login("user1")
+        response = self.client.get("/notifications")
+        # User1 didn't receive any notifications, so should have none
+        self.assertIn(b"You have no notifications", response.data)
+
+    def test_email_preferences_update(self):
+        """Users should be able to update their email notification preferences."""
+        self.register("user1")  # First user becomes admin
+        self.login("user1")
+        # Update preferences
+        response = self.post(
+            "/profile/notifications",
+            {
+                "email_on_assign": "on",
+                "email_on_comment": "on",
+                "email_on_status": "",
+            },
+            csrf_path="/profile"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Notification preferences updated", response.data)
+
+    def test_unread_notification_count_in_header(self):
+        """Unread notification count should appear in header."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Count Test")
+        self.login("admin1")
+        # Check dashboard for notification count
+        response = self.client.get("/dashboard")
+        self.assertEqual(response.status_code, 200)
+        # Should have notification badge with count
+        self.assertIn(b"notification-badge", response.data)
+        self.assertIn(b">1<", response.data)  # Badge should show 1 unread
+
+    def test_notification_link_to_ticket(self):
+        """Notifications should link to the relevant ticket."""
+        self.register("admin1")  # First user becomes admin
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Link Test")
+        self.login("admin1")
+        response = self.client.get("/notifications")
+        self.assertEqual(response.status_code, 200)
+        # Should have link to ticket #1
+        self.assertIn(b"/tickets/1", response.data)
+
+    # File upload enhancement tests
+    def test_multiple_file_upload(self):
+        """Users should be able to upload multiple files at once."""
+        import io
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Multi Upload Test")
+        
+        # Create multiple test files
+        token = self.dashboard_csrf()
+        data = {
+            'csrf_token': token,
+            'file': [
+                (io.BytesIO(b'test content 1'), 'test1.txt'),
+                (io.BytesIO(b'test content 2'), 'test2.txt'),
+            ]
+        }
+        
+        response = self.client.post(
+            '/tickets/1/attachments',
+            data=data,
+            content_type='multipart/form-data',
+            follow_redirects=True
+        )
+        
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'file(s) uploaded successfully', response.data)
+        self.assertIn(b'test1.txt', response.data)
+        self.assertIn(b'test2.txt', response.data)
+
+    def test_file_upload_with_invalid_type(self):
+        """Invalid file types should be rejected."""
+        import io
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Invalid Upload Test")
+        
+        token = self.dashboard_csrf()
+        data = {
+            'csrf_token': token,
+            'file': [(io.BytesIO(b'fake exe'), 'virus.exe')]
+        }
+        
+        response = self.client.post(
+            '/tickets/1/attachments',
+            data=data,
+            content_type='multipart/form-data',
+            follow_redirects=True
+        )
+        
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'invalid file type', response.data)
+
+    def test_mixed_valid_invalid_files(self):
+        """Valid files should upload even when mixed with invalid ones."""
+        import io
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Mixed Upload Test")
+        
+        token = self.dashboard_csrf()
+        data = {
+            'csrf_token': token,
+            'file': [
+                (io.BytesIO(b'valid content'), 'valid.txt'),
+                (io.BytesIO(b'invalid content'), 'invalid.exe'),
+            ]
+        }
+        
+        response = self.client.post(
+            '/tickets/1/attachments',
+            data=data,
+            content_type='multipart/form-data',
+            follow_redirects=True
+        )
+        
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'1 file(s) uploaded successfully', response.data)
+        self.assertIn(b'valid.txt', response.data)
+
 
 if __name__ == "__main__":
     unittest.main()
