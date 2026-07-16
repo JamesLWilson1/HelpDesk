@@ -236,6 +236,15 @@ button,
   font-weight: bold;
 }
 
+.chart-container {
+  max-width: 500px;
+  margin: 0 auto 1.5rem;
+}
+
+.chart-container canvas {
+  max-height: 300px;
+}
+
 .button-link {
   padding: 0.65rem 0.9rem;
   border-radius: 8px;

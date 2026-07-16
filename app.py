@@ -7,7 +7,12 @@ import sqlite3
 import threading
 import uuid
 from functools import wraps
-from openai import OpenAI
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for
@@ -18,7 +23,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+if OPENAI_AVAILABLE:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+else:
+    client = None
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{3,50}$")
 MAX_TITLE_LENGTH = 120
@@ -207,7 +215,7 @@ def create_app(test_config=None):
         threading.Thread(target=_send, daemon=True).start()
         
     def generate_ticket_summary(ticket, comments):
-        if not os.getenv("OPENAI_API_KEY"):
+        if not OPENAI_AVAILABLE or not os.getenv("OPENAI_API_KEY"):
             return "OpenAI API key is not configured."
 
         conversation = []
@@ -215,9 +223,9 @@ def create_app(test_config=None):
         for comment in comments:
             conversation.append(
                 f'{comment["username"]}: {comment["body"]}'
-        )
+            )
 
-    prompt = f"""
+        prompt = f"""
 You are an IT helpdesk assistant.
 
 Summarize this support ticket in 4-8 concise bullet points.
@@ -251,16 +259,16 @@ Comments:
 {chr(10).join(conversation)}
 """
 
-    try:
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-        )
+        try:
+            response = client.responses.create(
+                model="gpt-4.1-mini",
+                input=prompt,
+            )
 
-        return response.output_text
+            return response.output_text
 
-    except Exception as e:
-        return f"Unable to generate summary: {e}"
+        except Exception as e:
+            return f"Unable to generate summary: {e}"
 
     def log_action(ticket_id, action, detail=""):
         execute(

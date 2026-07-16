@@ -15,6 +15,11 @@
   </div>
 </section>
 
+<section class="card chart-container">
+  <h3>Ticket Status Overview</h3>
+  <canvas id="statsChart" width="400" height="200"></canvas>
+</section>
+
 <section class="card">
   <h2>{{ "All tickets" if g.user["role"] == "admin" else "My tickets" }}</h2>
   <form method="get" class="filters">
@@ -109,4 +114,52 @@
     <p>No tickets match the current filters.</p>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const ctx = document.getElementById('statsChart');
+const total = {{ stats.open }} + {{ stats.in_progress }} + {{ stats.closed }};
+
+if (total > 0) {
+  new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Open', 'In Progress', 'Closed'],
+      datasets: [{
+        data: [{{ stats.open }}, {{ stats.in_progress }}, {{ stats.closed }}],
+        backgroundColor: ['#3b82f6', '#f59e0b', '#10b981'],
+        borderWidth: 2,
+        borderColor: '#fff'
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            padding: 15,
+            font: { size: 13 }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(context) {
+              const label = context.label || '';
+              const value = context.parsed || 0;
+              const percentage = ((value / total) * 100).toFixed(1);
+              return label + ': ' + value + ' (' + percentage + '%)';
+            }
+          }
+        }
+      }
+    }
+  });
+} else {
+  ctx.parentElement.innerHTML = '<p class="meta">No tickets yet. Create your first ticket to see stats.</p>';
+}
+</script>
 {% endblock %}

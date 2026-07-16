@@ -601,6 +601,17 @@ class HelpDeskAppTests(unittest.TestCase):
         response = self.client.get("/dashboard")
         self.assertIn(b"ticket-overdue", response.data)
 
+    def test_dashboard_displays_stats_chart(self):
+        self.register("alice")
+        self.login("alice")
+        self.create_ticket("Issue 1")
+        response = self.client.get("/dashboard")
+        # Check that the chart container and heading are present
+        self.assertIn(b"Ticket Status Overview", response.data)
+        self.assertIn(b'id="statsChart"', response.data)
+        # Check that Chart.js is loaded
+        self.assertIn(b"chart.js", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()
