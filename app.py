@@ -154,6 +154,21 @@ def create_app(test_config=None):
                 FOREIGN KEY (user_id) REFERENCES users (id),
                 FOREIGN KEY (ticket_id) REFERENCES tickets (id)
             );
+
+            CREATE TABLE IF NOT EXISTS ticket_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL,
+                priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
+                default_title TEXT NOT NULL,
+                default_description TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_by INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users (id)
+            );
             """
         )
         db.commit()
@@ -594,10 +609,12 @@ Comments:
             )["avg_days"] or 0
             
         admins = query_all("SELECT id, username FROM users WHERE role = 'admin' ORDER BY username")
+        templates = query_all("SELECT * FROM ticket_templates WHERE is_active = 1 ORDER BY name")
         return render_template(
             "dashboard.html",
             tickets=tickets,
             admins=admins,
+            templates=templates,
             status=status,
             search=search,
             priority=priority,
@@ -752,6 +769,14 @@ Comments:
     @app.route("/tickets/new", methods=("GET", "POST"))
     @login_required
     def create_ticket():
+        template = None
+        template_id = request.args.get("template_id", type=int)
+        if template_id:
+            template = query_one(
+                "SELECT * FROM ticket_templates WHERE id = ? AND is_active = 1",
+                (template_id,)
+            )
+        
         if request.method == "POST":
             validate_csrf()
             title = request.form.get("title", "").strip()
@@ -791,7 +816,7 @@ Comments:
                 log_action(new_ticket_id, "ticket_created", "Ticket created")
                 flash("Ticket created successfully.", "success")
                 return redirect(url_for("ticket_detail", ticket_id=new_ticket_id))
-        return render_template("ticket_form.html", ticket=None)
+        return render_template("ticket_form.html", ticket=None, template=template)
 
     @app.route("/tickets/<int:ticket_id>")
     @login_required
@@ -1197,6 +1222,116 @@ Comments:
         execute("DELETE FROM users WHERE id = ?", (user_id,))
         flash(f"User {user['username']} deleted.", "success")
         return redirect(url_for("admin_users"))
+
+    @app.route("/admin/templates")
+    @admin_required
+    def admin_templates():
+        templates = query_all(
+            """
+            SELECT t.*, u.username AS creator
+            FROM ticket_templates t
+            JOIN users u ON t.created_by = u.id
+            ORDER BY t.is_active DESC, t.name ASC
+            """
+        )
+        return render_template("admin_templates.html", templates=templates)
+
+    @app.route("/admin/templates/new", methods=("GET", "POST"))
+    @admin_required
+    def create_template():
+        if request.method == "POST":
+            validate_csrf()
+            name = request.form.get("name", "").strip()
+            description = request.form.get("description", "").strip()
+            category = request.form.get("category", "").strip()
+            priority = request.form.get("priority", "medium")
+            default_title = request.form.get("default_title", "").strip()
+            default_description = request.form.get("default_description", "").strip()
+            
+            if not name or len(name) > 100:
+                flash("Template name is required (max 100 characters).", "error")
+            elif not category:
+                flash("Category is required.", "error")
+            elif not default_title or len(default_title) > 200:
+                flash("Default title is required (max 200 characters).", "error")
+            elif not default_description:
+                flash("Default description is required.", "error")
+            else:
+                execute(
+                    """
+                    INSERT INTO ticket_templates 
+                    (name, description, category, priority, default_title, default_description, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (name, description, category, priority, default_title, default_description, g.user["id"]),
+                )
+                flash("Template created successfully.", "success")
+                return redirect(url_for("admin_templates"))
+        
+        return render_template("template_form.html", template=None)
+
+    @app.route("/admin/templates/<int:template_id>/edit", methods=("GET", "POST"))
+    @admin_required
+    def edit_template(template_id):
+        template = query_one("SELECT * FROM ticket_templates WHERE id = ?", (template_id,))
+        if template is None:
+            abort(404)
+        
+        if request.method == "POST":
+            validate_csrf()
+            name = request.form.get("name", "").strip()
+            description = request.form.get("description", "").strip()
+            category = request.form.get("category", "").strip()
+            priority = request.form.get("priority", "medium")
+            default_title = request.form.get("default_title", "").strip()
+            default_description = request.form.get("default_description", "").strip()
+            
+            if not name or len(name) > 100:
+                flash("Template name is required (max 100 characters).", "error")
+            elif not category:
+                flash("Category is required.", "error")
+            elif not default_title or len(default_title) > 200:
+                flash("Default title is required (max 200 characters).", "error")
+            elif not default_description:
+                flash("Default description is required.", "error")
+            else:
+                execute(
+                    """
+                    UPDATE ticket_templates 
+                    SET name = ?, description = ?, category = ?, priority = ?, 
+                        default_title = ?, default_description = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (name, description, category, priority, default_title, default_description, template_id),
+                )
+                flash("Template updated successfully.", "success")
+                return redirect(url_for("admin_templates"))
+        
+        return render_template("template_form.html", template=template)
+
+    @app.route("/admin/templates/<int:template_id>/toggle", methods=("POST",))
+    @admin_required
+    def toggle_template(template_id):
+        validate_csrf()
+        template = query_one("SELECT * FROM ticket_templates WHERE id = ?", (template_id,))
+        if template is None:
+            abort(404)
+        new_status = 0 if template["is_active"] else 1
+        execute("UPDATE ticket_templates SET is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, template_id))
+        status_text = "activated" if new_status else "deactivated"
+        flash(f"Template {status_text}.", "success")
+        return redirect(url_for("admin_templates"))
+
+    @app.route("/admin/templates/<int:template_id>/delete", methods=("POST",))
+    @admin_required
+    def delete_template(template_id):
+        validate_csrf()
+        template = query_one("SELECT * FROM ticket_templates WHERE id = ?", (template_id,))
+        if template is None:
+            abort(404)
+        execute("DELETE FROM ticket_templates WHERE id = ?", (template_id,))
+        flash("Template deleted.", "success")
+        return redirect(url_for("admin_templates"))
 
     @app.route("/admin/export/tickets.csv")
     @admin_required

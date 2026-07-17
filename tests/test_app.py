@@ -983,6 +983,204 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertIn(b'1 file(s) uploaded successfully', response.data)
         self.assertIn(b'valid.txt', response.data)
 
+    # Template tests
+    def test_admin_can_create_template(self):
+        """Admins should be able to create ticket templates."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        response = self.post(
+            "/admin/templates/new",
+            {
+                "name": "Password Reset",
+                "description": "User cannot access their account",
+                "category": "Software",
+                "priority": "medium",
+                "default_title": "Cannot access my account",
+                "default_description": "I am unable to log in to my account. Please reset my password.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Template created successfully', response.data)
+        self.assertIn(b'Password Reset', response.data)
+
+    def test_user_cannot_create_template(self):
+        """Regular users should not be able to create templates."""
+        self.register("admin1")
+        self.register("user1")
+        self.login("user1")
+        
+        response = self.client.get("/admin/templates/new")
+        self.assertEqual(response.status_code, 403)
+
+    def test_template_appears_on_dashboard(self):
+        """Active templates should appear on the dashboard."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Printer Issue",
+                "description": "Printer problems",
+                "category": "Hardware",
+                "priority": "low",
+                "default_title": "Printer not working",
+                "default_description": "The printer is not responding.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        response = self.client.get("/dashboard")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Printer Issue', response.data)
+        self.assertIn(b'Quick Create from Template', response.data)
+
+    def test_ticket_created_from_template(self):
+        """Tickets created from templates should have pre-filled values."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Email Problem",
+                "description": "Email access issues",
+                "category": "Software",
+                "priority": "high",
+                "default_title": "Cannot send emails",
+                "default_description": "I am unable to send emails from my account.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        # Access the create ticket page with template
+        response = self.client.get("/tickets/new?template_id=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Cannot send emails', response.data)
+        self.assertIn(b'unable to send emails', response.data)
+        self.assertIn(b'Using template: Email Problem', response.data)
+
+    def test_admin_can_edit_template(self):
+        """Admins should be able to edit templates."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Original Name",
+                "description": "Original description",
+                "category": "Software",
+                "priority": "low",
+                "default_title": "Original title",
+                "default_description": "Original description text.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        # Edit the template
+        response = self.post(
+            "/admin/templates/1/edit",
+            {
+                "name": "Updated Name",
+                "description": "Updated description",
+                "category": "Hardware",
+                "priority": "high",
+                "default_title": "Updated title",
+                "default_description": "Updated description text.",
+            },
+            csrf_path="/admin/templates/1/edit"
+        )
+        
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Template updated successfully', response.data)
+        self.assertIn(b'Updated Name', response.data)
+
+    def test_admin_can_toggle_template(self):
+        """Admins should be able to activate/deactivate templates."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Toggle Test",
+                "description": "Test template",
+                "category": "Software",
+                "priority": "medium",
+                "default_title": "Test",
+                "default_description": "Test description.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        # Deactivate the template
+        response = self.post("/admin/templates/1/toggle", {}, csrf_path="/admin/templates")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'deactivated', response.data)
+        
+        # Template should not appear on dashboard when inactive
+        response = self.client.get("/dashboard")
+        self.assertNotIn(b'Toggle Test', response.data)
+
+    def test_admin_can_delete_template(self):
+        """Admins should be able to delete templates."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Delete Test",
+                "description": "Will be deleted",
+                "category": "Software",
+                "priority": "low",
+                "default_title": "Test",
+                "default_description": "Test.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        
+        # Delete the template
+        response = self.post("/admin/templates/1/delete", {}, csrf_path="/admin/templates")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'Template deleted', response.data)
+        self.assertNotIn(b'Delete Test', response.data)
+
+    def test_inactive_template_not_usable(self):
+        """Inactive templates should not be usable for creating tickets."""
+        self.register("admin1")
+        self.login("admin1")
+        
+        # Create and deactivate a template
+        self.post(
+            "/admin/templates/new",
+            {
+                "name": "Inactive Test",
+                "description": "Test",
+                "category": "Software",
+                "priority": "medium",
+                "default_title": "Test",
+                "default_description": "Test.",
+            },
+            csrf_path="/admin/templates/new"
+        )
+        self.post("/admin/templates/1/toggle", {}, csrf_path="/admin/templates")
+        
+        # Try to use the inactive template
+        response = self.client.get("/tickets/new?template_id=1")
+        self.assertEqual(response.status_code, 200)
+        # Should not show template data
+        self.assertNotIn(b'Using template:', response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

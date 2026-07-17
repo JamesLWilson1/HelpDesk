@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Manage Templates - HelpDesk{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2>Ticket Templates</h2>
+  <a href="{{ url_for('create_template') }}" class="button">Create Template</a>
+</div>
+
+{% if templates %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Category</th>
+        <th>Priority</th>
+        <th>Status</th>
+        <th>Created By</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tpl in templates %}
+        <tr>
+          <td>
+            <strong>{{ tpl["name"] }}</strong>
+            {% if tpl["description"] %}
+              <div class="meta">{{ tpl["description"] }}</div>
+            {% endif %}
+          </td>
+          <td>{{ tpl["category"] }}</td>
+          <td>{{ tpl["priority"] }}</td>
+          <td>
+            {% if tpl["is_active"] %}
+              <span class="badge-success">Active</span>
+            {% else %}
+              <span class="badge-secondary">Inactive</span>
+            {% endif %}
+          </td>
+          <td>{{ tpl["creator"] }}</td>
+          <td>{{ tpl["created_at"][:10] }}</td>
+          <td>
+            <div class="action-buttons">
+              <a href="{{ url_for('edit_template', template_id=tpl['id']) }}" class="button-link">Edit</a>
+              <form method="post" action="{{ url_for('toggle_template', template_id=tpl['id']) }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="button-secondary button-small">
+                  {% if tpl["is_active"] %}Deactivate{% else %}Activate{% endif %}
+                </button>
+              </form>
+              <form method="post" action="{{ url_for('delete_template', template_id=tpl['id']) }}" style="display:inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="button-danger button-small" 
+                        onclick="return confirm('Delete this template?')">Delete</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="empty-state">No templates yet. <a href="{{ url_for('create_template') }}">Create your first template</a>.</p>
+{% endif %}
+{% endblock %}

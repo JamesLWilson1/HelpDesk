@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if template else 'Create' }} Template - HelpDesk{% endblock %}
+{% block content %}
+<h2>{{ 'Edit' if template else 'Create' }} Template</h2>
+
+<form method="post" class="stack">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  
+  <label>
+    Template Name <span class="required">*</span>
+    <input type="text" name="name" value="{{ template['name'] if template else '' }}" 
+           placeholder="e.g., Password Reset Request" maxlength="100" required>
+  </label>
+
+  <label>
+    Description
+    <input type="text" name="description" value="{{ template['description'] if template else '' }}" 
+           placeholder="Brief description of when to use this template" maxlength="200">
+  </label>
+
+  <label>
+    Category <span class="required">*</span>
+    <select name="category" required>
+      <option value="">Select a category</option>
+      <option value="Hardware" {% if template and template['category'] == 'Hardware' %}selected{% endif %}>Hardware</option>
+      <option value="Software" {% if template and template['category'] == 'Software' %}selected{% endif %}>Software</option>
+      <option value="Infrastructure" {% if template and template['category'] == 'Infrastructure' %}selected{% endif %}>Infrastructure</option>
+    </select>
+  </label>
+
+  <label>
+    Priority <span class="required">*</span>
+    <select name="priority" required>
+      <option value="low" {% if template and template['priority'] == 'low' %}selected{% endif %}>Low</option>
+      <option value="medium" {% if template and template['priority'] == 'medium' %}selected{% elif not template %}selected{% endif %}>Medium</option>
+      <option value="high" {% if template and template['priority'] == 'high' %}selected{% endif %}>High</option>
+    </select>
+  </label>
+
+  <label>
+    Default Title <span class="required">*</span>
+    <input type="text" name="default_title" value="{{ template['default_title'] if template else '' }}" 
+           placeholder="e.g., Cannot access my account" maxlength="200" required>
+  </label>
+
+  <label>
+    Default Description <span class="required">*</span>
+    <textarea name="default_description" rows="8" required>{{ template['default_description'] if template else '' }}</textarea>
+  </label>
+
+  <div class="button-group">
+    <button type="submit">{{ 'Update' if template else 'Create' }} Template</button>
+    <a href="{{ url_for('admin_templates') }}" class="button-secondary">Cancel</a>
+  </div>
+</form>
+
+<div class="help-text" style="margin-top: 2rem;">
+  <h3>Template Tips</h3>
+  <ul>
+    <li><strong>Template Name:</strong> Short, descriptive name shown to users</li>
+    <li><strong>Default Title & Description:</strong> Pre-fill the ticket form with these values</li>
+    <li><strong>Category & Priority:</strong> Automatically set based on template type</li>
+    <li><strong>Active Status:</strong> Only active templates appear on the dashboard</li>
+  </ul>
+</div>
+{% endblock %}

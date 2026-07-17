@@ -15,6 +15,39 @@
   </div>
 </section>
 
+{% if templates %}
+<section class="card quick-templates">
+  <h3>Quick Create from Template</h3>
+  <div class="template-grid">
+    {% for tpl in templates %}
+      <a href="{{ url_for('create_ticket', template_id=tpl['id']) }}" class="template-card">
+        <div class="template-icon">
+          {% if tpl['category'] == 'Hardware' %}
+            🖥️
+          {% elif tpl['category'] == 'Software' %}
+            💻
+          {% elif tpl['category'] == 'Infrastructure' %}
+            🌐
+          {% else %}
+            📋
+          {% endif %}
+        </div>
+        <div class="template-info">
+          <div class="template-name">{{ tpl['name'] }}</div>
+          {% if tpl['description'] %}
+            <div class="template-desc">{{ tpl['description'] }}</div>
+          {% endif %}
+          <div class="template-meta">
+            <span class="badge-{{ tpl['priority'] }}">{{ tpl['priority'] }}</span>
+            <span>{{ tpl['category'] }}</span>
+          </div>
+        </div>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="card chart-container">
   <h3>Ticket Status Overview</h3>
   <canvas id="statsChart" width="400" height="200"></canvas>
