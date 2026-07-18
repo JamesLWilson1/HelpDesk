@@ -19,6 +19,7 @@ from flask import Flask, Response, abort, flash, g, redirect, render_template, r
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_mail import Mail, Message
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -246,6 +247,53 @@ def create_app(test_config=None):
             return f"Description must be {MAX_DESCRIPTION_LENGTH} characters or fewer."
         return None
 
+    def uploaded_file_size(file):
+        file.stream.seek(0, os.SEEK_END)
+        size = file.stream.tell()
+        file.stream.seek(0)
+        return size
+
+    ERROR_MESSAGES = {
+        400: (
+            "We could not process that request.",
+            "Refresh the page and try again. If you were submitting a form, your security token may have expired.",
+        ),
+        403: (
+            "You do not have access to that page.",
+            "Sign in with an account that has permission, or return to your dashboard.",
+        ),
+        404: (
+            "We could not find that page.",
+            "The ticket, file, or page may have been moved or deleted.",
+        ),
+        413: (
+            "That file is too large.",
+            f"Attachments must be {MAX_FILE_BYTES // 1024 // 1024} MB or smaller.",
+        ),
+        429: (
+            "Too many requests.",
+            "Wait a moment, then try again.",
+        ),
+        500: (
+            "Something went wrong on our side.",
+            "The request could not be completed. Try again, or contact support if it keeps happening.",
+        ),
+    }
+
+    def render_error(error, status_code=None):
+        code = status_code or getattr(error, "code", 500)
+        title, message = ERROR_MESSAGES.get(code, ERROR_MESSAGES[500])
+        detail = getattr(error, "description", "")
+        if detail == getattr(error, "name", ""):
+            detail = ""
+        return render_template(
+            "error.html",
+            code=code,
+            title=title,
+            message=message,
+            detail=detail,
+        ), code
+
     def send_notification(subject, recipients, body):
         """Send an email in a background thread. No-ops if MAIL_DEFAULT_SENDER is not configured."""
         filtered = [r for r in recipients if r]
@@ -381,6 +429,17 @@ Comments:
         if g.user["role"] != "admin" and ticket["user_id"] != g.user["id"]:
             abort(403)
         return ticket
+
+    @app.errorhandler(HTTPException)
+    def handle_http_error(error):
+        return render_error(error)
+
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        if app.config.get("TESTING"):
+            raise error
+        app.logger.exception("Unhandled application error")
+        return render_error(error, 500)
 
     init_db()
     
@@ -1080,6 +1139,8 @@ Comments:
             if ext not in ALLOWED_EXTENSIONS:
                 errors.append(f"{file.filename}: invalid file type")
                 continue
+            if uploaded_file_size(file) > MAX_FILE_BYTES:
+                abort(413)
             
             try:
                 stored_name = f"{uuid.uuid4().hex}{ext}"

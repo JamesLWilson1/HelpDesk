@@ -53,6 +53,36 @@ a {
   margin: 2rem auto;
 }
 
+.error-card {
+  max-width: 640px;
+  margin: 3rem auto;
+  text-align: center;
+}
+
+.error-code {
+  display: inline-grid;
+  place-items: center;
+  min-width: 4rem;
+  height: 4rem;
+  margin-bottom: 1rem;
+  border-radius: 50%;
+  background: #fee2e2;
+  color: #991b1b;
+  font-size: 1.5rem;
+  font-weight: 800;
+}
+
+.error-detail {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+}
+
+.error-actions {
+  margin-top: 1.25rem;
+}
+
 .stack,
 .filters,
 .admin-actions,

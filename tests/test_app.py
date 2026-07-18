@@ -172,6 +172,8 @@ class HelpDeskAppTests(unittest.TestCase):
             data={"username": "admin-user", "password": "secret123"},
         )
         self.assertEqual(response.status_code, 400)
+        self.assertIn(b"We could not process that request", response.data)
+        self.assertIn(b"Invalid CSRF token", response.data)
 
     def test_post_with_wrong_csrf_token_returns_400(self):
         self.client.get("/login")  # establishes session with a real token
@@ -180,6 +182,7 @@ class HelpDeskAppTests(unittest.TestCase):
             data={"csrf_token": "wrong-token", "username": "admin-user", "password": "secret123"},
         )
         self.assertEqual(response.status_code, 400)
+        self.assertIn(b"We could not process that request", response.data)
 
     # --- Access control ---
 
@@ -199,6 +202,7 @@ class HelpDeskAppTests(unittest.TestCase):
         self.login("user-two")
         response = self.client.get("/tickets/1")
         self.assertEqual(response.status_code, 403)
+        self.assertIn(b"You do not have access", response.data)
 
     def test_user_cannot_edit_another_users_ticket(self):
         self.register("admin-user")
@@ -250,6 +254,7 @@ class HelpDeskAppTests(unittest.TestCase):
         self.login("admin-user")
         response = self.client.get("/tickets/999")
         self.assertEqual(response.status_code, 404)
+        self.assertIn(b"We could not find that page", response.data)
 
     # --- Input validation ---
 
@@ -958,6 +963,29 @@ class HelpDeskAppTests(unittest.TestCase):
         
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'invalid file type', response.data)
+
+    def test_large_file_upload_shows_friendly_error(self):
+        """Files over the app limit should show the friendly 413 page."""
+        import io
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Large Upload Test")
+
+        token = self.dashboard_csrf()
+        data = {
+            'csrf_token': token,
+            'file': [(io.BytesIO(b'x' * (6 * 1024 * 1024)), 'large.txt')]
+        }
+
+        response = self.client.post(
+            '/tickets/1/attachments',
+            data=data,
+            content_type='multipart/form-data',
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn(b'That file is too large', response.data)
+        self.assertIn(b'Attachments must be 5 MB or smaller', response.data)
 
     def test_mixed_valid_invalid_files(self):
         """Valid files should upload even when mixed with invalid ones."""
