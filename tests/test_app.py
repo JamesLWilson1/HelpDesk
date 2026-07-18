@@ -932,6 +932,9 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertIn(b'file(s) uploaded successfully', response.data)
         self.assertIn(b'test1.txt', response.data)
         self.assertIn(b'test2.txt', response.data)
+        self.assertIn(b'Attachment library', response.data)
+        self.assertIn(b'Uploaded by user1', response.data)
+        self.assertIn(b'Download', response.data)
 
     def test_file_upload_with_invalid_type(self):
         """Invalid file types should be rejected."""

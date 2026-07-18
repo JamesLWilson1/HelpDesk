@@ -77,8 +77,16 @@
   </section>
 {% endif %}
 
-<section class="card">
-  <h3>Attachments</h3>
+<section class="card attachments-panel">
+  <div class="section-heading">
+    <div>
+      <h3>Attachments</h3>
+      <p class="meta">Screenshots, logs, PDFs, and notes attached to this ticket.</p>
+    </div>
+    {% if attachments %}
+      <span class="attachment-count">{{ attachments|length }} file{{ '' if attachments|length == 1 else 's' }}</span>
+    {% endif %}
+  </div>
   <form method="post" action="{{ url_for('upload_attachment', ticket_id=ticket['id']) }}"
         enctype="multipart/form-data" class="stack" id="upload-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -100,40 +108,46 @@
   </form>
 
   {% if attachments %}
-    <ul class="attachment-list">
+    <div class="attachment-list" aria-label="Attachment library">
       {% for att in attachments %}
-        <li class="attachment-item">
+        {% set ext = att["original_name"].split('.')[-1].lower() %}
+        {% set is_image = ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] %}
+        {% set is_viewable = is_image or ext == 'pdf' %}
+        {% set attachment_url = url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) %}
+        <article class="attachment-item">
           <div class="attachment-content">
-            {% set ext = att["original_name"].split('.')[-1].lower() %}
-            {% if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] %}
-              <div class="attachment-preview">
-                <a href="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" target="_blank">
-                  <img src="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" 
-                       alt="{{ att['original_name'] }}" 
-                       loading="lazy">
-                </a>
+            {% if is_image %}
+              <button type="button" class="attachment-preview attachment-preview-button"
+                      data-preview-src="{{ attachment_url }}"
+                      data-preview-name="{{ att['original_name'] }}"
+                      aria-label="Preview {{ att['original_name'] }}">
+                <img src="{{ attachment_url }}"
+                     alt="{{ att['original_name'] }}"
+                     loading="lazy">
+              </button>
+            {% else %}
+              <div class="attachment-preview attachment-file-icon" aria-hidden="true">
+                {% if ext == 'pdf' %}
+                  PDF
+                {% elif ext in ['txt', 'log'] %}
+                  TXT
+                {% elif ext == 'csv' %}
+                  CSV
+                {% else %}
+                  FILE
+                {% endif %}
               </div>
             {% endif %}
             <div class="attachment-info">
               <div class="attachment-name">
-                {% if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp'] %}
-                  🖼️
-                {% elif ext == 'pdf' %}
-                  📄
-                {% elif ext in ['txt', 'log'] %}
-                  📝
-                {% elif ext == 'csv' %}
-                  📊
-                {% else %}
-                  📎
-                {% endif %}
-                <a href="{{ url_for('download_attachment', ticket_id=ticket['id'], attachment_id=att['id']) }}" 
-                   {% if ext not in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'] %}download{% endif %}>
-                  {{ att["original_name"] }}
-                </a>
+                <a href="{{ attachment_url }}" {% if not is_viewable %}download{% else %}target="_blank" rel="noopener"{% endif %}>{{ att["original_name"] }}</a>
+              </div>
+              <div class="attachment-tags">
+                <span class="attachment-type">{{ ext|upper }}</span>
+                {% if is_image %}<span class="attachment-type attachment-type-image">Image preview</span>{% endif %}
               </div>
               <div class="attachment-meta">
-                {{ att["uploader"] }} · 
+                Uploaded by {{ att["uploader"] }} · {{ att["created_at"] }} ·
                 {% if att["size"] < 1024 %}
                   {{ att["size"] }} bytes
                 {% elif att["size"] < 1024 * 1024 %}
@@ -141,6 +155,12 @@
                 {% else %}
                   {{ (att["size"] / 1024 / 1024) | round(2) }} MB
                 {% endif %}
+              </div>
+              <div class="attachment-actions">
+                {% if is_viewable %}
+                  <a class="button-small button-secondary" href="{{ attachment_url }}" target="_blank" rel="noopener">View</a>
+                {% endif %}
+                <a class="button-small" href="{{ attachment_url }}" download>Download</a>
               </div>
             </div>
           </div>
@@ -153,13 +173,24 @@
                       onclick="return confirm('Delete this attachment?')">Delete</button>
             </form>
           {% endif %}
-        </li>
+        </article>
       {% endfor %}
-    </ul>
+    </div>
   {% else %}
     <p class="meta">No attachments yet.</p>
   {% endif %}
 </section>
+
+<div class="attachment-modal" id="attachment-modal" aria-hidden="true">
+  <div class="attachment-modal-backdrop" data-close-preview></div>
+  <div class="attachment-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="attachment-modal-title">
+    <div class="attachment-modal-header">
+      <strong id="attachment-modal-title">Attachment preview</strong>
+      <button type="button" class="button-small" data-close-preview>Close</button>
+    </div>
+    <img id="attachment-modal-image" src="" alt="">
+  </div>
+</div>
 
 <script>
 // Drag and drop functionality
@@ -168,6 +199,7 @@ const fileInput = document.getElementById('file-input');
 const filePreview = document.getElementById('file-preview');
 const uploadBtn = document.getElementById('upload-btn');
 const uploadForm = document.getElementById('upload-form');
+let livePreviewUrls = [];
 
 // Click to browse
 dropZone.addEventListener('click', () => fileInput.click());
@@ -208,6 +240,8 @@ fileInput.addEventListener('change', function() {
 });
 
 function updatePreview(files) {
+  livePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  livePreviewUrls = [];
   filePreview.innerHTML = '';
   
   if (files.length === 0) {
@@ -223,28 +257,35 @@ function updatePreview(files) {
     const ext = '.' + file.name.split('.').pop().toLowerCase();
     const isValid = allowedExts.includes(ext);
     const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+    const isTextPreview = ['.txt', '.log', '.csv'].includes(ext);
+    const isPdf = ext === '.pdf';
+    const isTooLarge = file.size > 5 * 1024 * 1024;
     
     const previewItem = document.createElement('div');
     previewItem.className = 'file-preview-item' + (isValid ? '' : ' invalid');
+    if (isTooLarge) {
+      previewItem.classList.add('invalid');
+    }
+
+    const summary = document.createElement('div');
+    summary.className = 'file-preview-summary';
     
-    // File icon/preview
     if (isImage && isValid) {
       const reader = new FileReader();
       reader.onload = function(e) {
         const img = document.createElement('img');
         img.src = e.target.result;
         img.className = 'preview-thumbnail';
-        previewItem.insertBefore(img, previewItem.firstChild);
+        summary.insertBefore(img, summary.firstChild);
       };
       reader.readAsDataURL(file);
     } else {
       const icon = document.createElement('span');
       icon.className = 'preview-icon';
-      icon.textContent = ext === '.pdf' ? '📄' : ext === '.csv' ? '📊' : ext.match(/\.(txt|log)/) ? '📝' : '📎';
-      previewItem.appendChild(icon);
+      icon.textContent = ext === '.pdf' ? 'PDF' : ext === '.csv' ? 'CSV' : ext.match(/\.(txt|log)/) ? 'TXT' : 'FILE';
+      summary.appendChild(icon);
     }
     
-    // File info
     const info = document.createElement('div');
     info.className = 'preview-info';
     
@@ -260,17 +301,88 @@ function updatePreview(files) {
     const sizeKB = (file.size / 1024).toFixed(1);
     const sizeMB = (file.size / 1024 / 1024).toFixed(2);
     size.textContent = file.size < 1024 * 1024 ? `${sizeKB} KB` : `${sizeMB} MB`;
-    if (file.size > 5 * 1024 * 1024) {
+    if (isTooLarge) {
       size.textContent += ' ⚠️ Too large (max 5 MB)';
-      previewItem.classList.add('invalid');
     }
     
     info.appendChild(name);
     info.appendChild(size);
-    previewItem.appendChild(info);
+    summary.appendChild(info);
+    previewItem.appendChild(summary);
+
+    if (isValid && !isTooLarge) {
+      addLivePreview(previewItem, file, ext, isImage, isTextPreview, isPdf);
+    }
     
     filePreview.appendChild(previewItem);
   });
+}
+
+function addLivePreview(previewItem, file, ext, isImage, isTextPreview, isPdf) {
+  const livePreview = document.createElement('div');
+  livePreview.className = 'live-file-preview';
+
+  if (isImage) {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const img = document.createElement('img');
+      img.src = e.target.result;
+      img.alt = file.name;
+      livePreview.appendChild(img);
+    };
+    reader.readAsDataURL(file);
+  } else if (isTextPreview) {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const text = String(e.target.result || '');
+      const previewText = text.length > 4000 ? text.slice(0, 4000) + '\n... preview truncated' : text;
+      const pre = document.createElement('pre');
+      pre.textContent = previewText || '(empty file)';
+      livePreview.appendChild(pre);
+    };
+    reader.readAsText(file);
+  } else if (isPdf) {
+    const url = URL.createObjectURL(file);
+    livePreviewUrls.push(url);
+    const frame = document.createElement('iframe');
+    frame.src = url;
+    frame.title = `Preview of ${file.name}`;
+    livePreview.appendChild(frame);
+  } else {
+    livePreview.textContent = `${ext.toUpperCase()} files can be uploaded and downloaded after saving.`;
+  }
+
+  previewItem.appendChild(livePreview);
+}
+
+const attachmentModal = document.getElementById('attachment-modal');
+const attachmentModalImage = document.getElementById('attachment-modal-image');
+const attachmentModalTitle = document.getElementById('attachment-modal-title');
+
+document.querySelectorAll('[data-preview-src]').forEach((button) => {
+  button.addEventListener('click', () => {
+    attachmentModalImage.src = button.dataset.previewSrc;
+    attachmentModalImage.alt = button.dataset.previewName;
+    attachmentModalTitle.textContent = button.dataset.previewName;
+    attachmentModal.classList.add('is-open');
+    attachmentModal.setAttribute('aria-hidden', 'false');
+  });
+});
+
+document.querySelectorAll('[data-close-preview]').forEach((button) => {
+  button.addEventListener('click', closeAttachmentPreview);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    closeAttachmentPreview();
+  }
+});
+
+function closeAttachmentPreview() {
+  attachmentModal.classList.remove('is-open');
+  attachmentModal.setAttribute('aria-hidden', 'true');
+  attachmentModalImage.src = '';
 }
 </script>
 
