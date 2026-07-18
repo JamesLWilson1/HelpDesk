@@ -1140,6 +1140,7 @@ Comments:
                 errors.append(f"{file.filename}: invalid file type")
                 continue
             if uploaded_file_size(file) > MAX_FILE_BYTES:
+                file.close()
                 abort(413)
             
             try:
@@ -1431,8 +1432,7 @@ Comments:
 
     @app.errorhandler(413)
     def file_too_large(e):
-        flash("File too large. Maximum size is 5 MB.", "error")
-        return redirect(request.referrer or url_for("dashboard"))
+        return render_error(e, 413)
 
     @app.route("/profile")
     @login_required
@@ -1538,8 +1538,7 @@ Comments:
 
     @app.errorhandler(429)
     def ratelimit_exceeded(e):
-        flash("Too many attempts. Please wait a moment and try again.", "error")
-        return redirect(request.referrer or url_for("login"))
+        return render_error(e, 429)
 
     return app
 

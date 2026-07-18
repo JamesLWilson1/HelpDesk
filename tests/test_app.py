@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 
+import app as app_module
 from app import create_app
 
 
@@ -970,18 +971,24 @@ class HelpDeskAppTests(unittest.TestCase):
         self.register("user1")
         self.login("user1")
         self.create_ticket("Large Upload Test")
+        self.app.config["MAX_CONTENT_LENGTH"] = None
+        original_max_file_bytes = app_module.MAX_FILE_BYTES
+        app_module.MAX_FILE_BYTES = 5
 
         token = self.dashboard_csrf()
         data = {
             'csrf_token': token,
-            'file': [(io.BytesIO(b'x' * (6 * 1024 * 1024)), 'large.txt')]
+            'file': [(io.BytesIO(b'x' * 6), 'large.txt')]
         }
 
-        response = self.client.post(
-            '/tickets/1/attachments',
-            data=data,
-            content_type='multipart/form-data',
-        )
+        try:
+            response = self.client.post(
+                '/tickets/1/attachments',
+                data=data,
+                content_type='multipart/form-data',
+            )
+        finally:
+            app_module.MAX_FILE_BYTES = original_max_file_bytes
 
         self.assertEqual(response.status_code, 413)
         self.assertIn(b'That file is too large', response.data)
