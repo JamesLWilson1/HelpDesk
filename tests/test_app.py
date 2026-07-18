@@ -1,6 +1,8 @@
 import os
+import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 import app as app_module
 from app import create_app
@@ -56,6 +58,22 @@ class HelpDeskAppTests(unittest.TestCase):
         self.client.get("/dashboard")
         with self.client.session_transaction() as session:
             return session["_csrf_token"]
+
+    def set_ticket_timestamps(self, ticket_id, created_at, updated_at=None, status=None):
+        updated_at = updated_at or created_at
+        query = "UPDATE tickets SET created_at = ?, updated_at = ?"
+        params = [created_at.strftime("%Y-%m-%d %H:%M:%S"), updated_at.strftime("%Y-%m-%d %H:%M:%S")]
+        if status:
+            query += ", status = ?"
+            params.append(status)
+        query += " WHERE id = ?"
+        params.append(ticket_id)
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.execute(query, tuple(params))
+            db.commit()
+        finally:
+            db.close()
 
     def test_first_registered_user_becomes_admin(self):
         response = self.register("admin-user")
@@ -311,6 +329,61 @@ class HelpDeskAppTests(unittest.TestCase):
         )
         self.assertIn(b"1000 characters", response.data)
 
+    def test_admin_can_add_internal_note(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket()
+
+        token = self.dashboard_csrf()
+        response = self.client.post(
+            "/tickets/1/internal-notes",
+            data={"csrf_token": token, "body": "Checked vendor warranty privately."},
+            follow_redirects=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Internal note added", response.data)
+        self.assertIn(b"Checked vendor warranty privately", response.data)
+        self.assertIn(b"Private troubleshooting notes", response.data)
+        self.assertIn(b"Internal note added", response.data)
+
+    def test_regular_user_cannot_add_internal_note(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket()
+
+        token = self.dashboard_csrf()
+        response = self.client.post(
+            "/tickets/1/internal-notes",
+            data={"csrf_token": token, "body": "Should not work."},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_regular_user_cannot_see_internal_notes(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("normal-user")
+        self.create_ticket("User-visible ticket")
+        self.post("/logout", {}, csrf_path="/dashboard")
+
+        self.login("admin-user")
+        token = self.dashboard_csrf()
+        self.client.post(
+            "/tickets/1/internal-notes",
+            data={"csrf_token": token, "body": "Private admin diagnosis."},
+            follow_redirects=True,
+        )
+        self.post("/logout", {}, csrf_path="/dashboard")
+
+        self.login("normal-user")
+        response = self.client.get("/tickets/1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(b"Internal Admin Notes", response.data)
+        self.assertNotIn(b"Private admin diagnosis", response.data)
+
     # --- Ticket deletion ---
 
     def test_admin_can_delete_ticket(self):
@@ -547,6 +620,47 @@ class HelpDeskAppTests(unittest.TestCase):
         high_pos = response.data.index(b"High ticket")
         low_pos = response.data.index(b"Low ticket")
         self.assertLess(high_pos, low_pos)
+
+    def test_dashboard_shows_sla_breached_filter(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket("Breached SLA")
+        self.create_ticket("Fresh SLA")
+        self.set_ticket_timestamps(1, datetime.utcnow() - timedelta(hours=5))
+
+        response = self.client.get("/dashboard?sla=breached")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Breached SLA", response.data)
+        self.assertIn(b"SLA breached", response.data)
+        self.assertIn(b"Overdue by", response.data)
+        self.assertNotIn(b"Fresh SLA", response.data)
+
+    def test_dashboard_shows_sla_at_risk_status(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket("At Risk SLA")
+        self.set_ticket_timestamps(1, datetime.utcnow() - timedelta(hours=3, minutes=30))
+
+        response = self.client.get("/dashboard?sla=at_risk")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"At Risk SLA", response.data)
+        self.assertIn(b"SLA at risk", response.data)
+        self.assertIn(b"Target 4h", response.data)
+
+    def test_ticket_detail_shows_resolved_sla_status(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket("Resolved SLA")
+        created_at = datetime.utcnow() - timedelta(hours=1)
+        self.set_ticket_timestamps(1, created_at, created_at + timedelta(minutes=30), status="closed")
+
+        response = self.client.get("/tickets/1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Resolved within SLA", response.data)
+        self.assertIn(b"Target 4h", response.data)
 
     # --- CSV export ---
 

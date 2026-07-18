@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
+from datetime import datetime, timedelta
 from functools import wraps
 
 try:
@@ -37,6 +38,7 @@ MAX_COMMENT_LENGTH = 1000
 PER_PAGE = 20
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
 ALLOWED_EXTENSIONS = {".csv", ".gif", ".jpeg", ".jpg", ".log", ".pdf", ".png", ".txt", ".webp"}
+SLA_TARGET_HOURS = {"high": 4, "medium": 24, "low": 72}
 SORT_OPTIONS = {
     "updated_desc": "tickets.updated_at DESC, tickets.id DESC",
     "updated_asc": "tickets.updated_at ASC, tickets.id ASC",
@@ -112,6 +114,16 @@ def create_app(test_config=None):
             );
 
             CREATE TABLE IF NOT EXISTS comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            );
+
+            CREATE TABLE IF NOT EXISTS internal_notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticket_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -252,6 +264,84 @@ def create_app(test_config=None):
         size = file.stream.tell()
         file.stream.seek(0)
         return size
+
+    def parse_timestamp(value):
+        if isinstance(value, datetime):
+            return value
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(value, fmt)
+            except (TypeError, ValueError):
+                continue
+        return datetime.utcnow()
+
+    def sla_status_for_ticket(ticket, now=None):
+        target_hours = SLA_TARGET_HOURS.get(ticket["priority"], SLA_TARGET_HOURS["medium"])
+        created_at = parse_timestamp(ticket["created_at"])
+        deadline = created_at + timedelta(hours=target_hours)
+        now = now or datetime.utcnow()
+
+        if ticket["status"] == "closed":
+            resolved_at = parse_timestamp(ticket["updated_at"])
+            return {
+                "status": "resolved",
+                "label": "Resolved within SLA" if resolved_at <= deadline else "Resolved after SLA",
+                "deadline": deadline.strftime("%Y-%m-%d %H:%M"),
+                "remaining": "Closed",
+                "target_hours": target_hours,
+            }
+
+        remaining = deadline - now
+        elapsed = now - created_at
+        at_risk_after = timedelta(hours=target_hours * 0.75)
+
+        if remaining.total_seconds() <= 0:
+            overdue = now - deadline
+            status = "breached"
+            label = "SLA breached"
+            remaining_text = f"Overdue by {format_duration(overdue)}"
+        elif elapsed >= at_risk_after:
+            status = "at_risk"
+            label = "SLA at risk"
+            remaining_text = f"Due in {format_duration(remaining)}"
+        else:
+            status = "on_track"
+            label = "SLA on track"
+            remaining_text = f"Due in {format_duration(remaining)}"
+
+        return {
+            "status": status,
+            "label": label,
+            "deadline": deadline.strftime("%Y-%m-%d %H:%M"),
+            "remaining": remaining_text,
+            "target_hours": target_hours,
+        }
+
+    def format_duration(delta):
+        total_minutes = max(1, int(delta.total_seconds() // 60))
+        days, remainder = divmod(total_minutes, 60 * 24)
+        hours, minutes = divmod(remainder, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if not parts and minutes:
+            parts.append(f"{minutes}m")
+        return " ".join(parts[:2]) or "less than 1m"
+
+    def with_sla(ticket):
+        enriched = dict(ticket)
+        enriched["sla"] = sla_status_for_ticket(enriched)
+        return enriched
+
+    def sla_counts_for_tickets(tickets):
+        counts = {"on_track": 0, "at_risk": 0, "breached": 0}
+        for ticket in tickets:
+            status = ticket["sla"]["status"]
+            if status in counts:
+                counts[status] += 1
+        return counts
 
     ERROR_MESSAGES = {
         400: (
@@ -428,7 +518,7 @@ Comments:
             abort(404)
         if g.user["role"] != "admin" and ticket["user_id"] != g.user["id"]:
             abort(403)
-        return ticket
+        return with_sla(ticket)
 
     @app.errorhandler(HTTPException)
     def handle_http_error(error):
@@ -531,8 +621,11 @@ Comments:
         search = request.args.get("search", "").strip()
         priority = request.args.get("priority", "").strip()
         category = request.args.get("category", "").strip()
+        sla = request.args.get("sla", "").strip()
         if priority not in {"low", "medium", "high"}:
             priority = ""
+        if sla not in {"on_track", "at_risk", "breached"}:
+            sla = ""
         sort = request.args.get("sort", "").strip()
         if sort not in SORT_OPTIONS:
             sort = "updated_desc"
@@ -566,14 +659,6 @@ Comments:
 
         where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-        total = query_one(
-            "SELECT COUNT(*) AS count FROM tickets" + where_clause,
-            tuple(where_params),
-        )["count"]
-
-        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
-        page = min(page, total_pages)
-
         data_query = (
             """
             SELECT tickets.*, owner.username AS owner_username, assignee.username AS assignee_username
@@ -582,9 +667,27 @@ Comments:
             LEFT JOIN users AS assignee ON assignee.id = tickets.assigned_to
             """
             + where_clause
-            + f" ORDER BY {SORT_OPTIONS[sort]} LIMIT ? OFFSET ?"
+            + f" ORDER BY {SORT_OPTIONS[sort]}"
         )
-        tickets = query_all(data_query, tuple(where_params) + (PER_PAGE, (page - 1) * PER_PAGE))
+        filtered_tickets = [with_sla(ticket) for ticket in query_all(data_query, tuple(where_params))]
+        if sla:
+            filtered_tickets = [ticket for ticket in filtered_tickets if ticket["sla"]["status"] == sla]
+
+        total = len(filtered_tickets)
+        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+        page = min(page, total_pages)
+        tickets = filtered_tickets[(page - 1) * PER_PAGE:page * PER_PAGE]
+
+        sla_scope_where = ""
+        sla_scope_params = []
+        if g.user["role"] != "admin":
+            sla_scope_where = " WHERE user_id = ?"
+            sla_scope_params.append(g.user["id"])
+        sla_scope_tickets = [
+            with_sla(ticket)
+            for ticket in query_all("SELECT * FROM tickets" + sla_scope_where, tuple(sla_scope_params))
+        ]
+        sla_counts = sla_counts_for_tickets(sla_scope_tickets)
 
         if g.user["role"] == "admin":
             stats = {
@@ -678,9 +781,11 @@ Comments:
             search=search,
             priority=priority,
             category=category,
+            sla=sla,
             categories=categories,
             sort=sort,
             stats=stats,
+            sla_counts=sla_counts,
             category_stats=category_stats,
             priority_stats=priority_stats,
             trend_data=trend_data,
@@ -901,6 +1006,18 @@ Comments:
             """,
             (ticket_id,),
         )
+        internal_notes = []
+        if g.user["role"] == "admin":
+            internal_notes = query_all(
+                """
+                SELECT internal_notes.*, users.username
+                FROM internal_notes
+                JOIN users ON users.id = internal_notes.user_id
+                WHERE internal_notes.ticket_id = ?
+                ORDER BY internal_notes.created_at ASC, internal_notes.id ASC
+                """,
+                (ticket_id,),
+            )
         activity = query_all(
             """
             SELECT audit_log.*, users.username AS actor
@@ -917,6 +1034,7 @@ Comments:
             ticket=ticket,
             comments=comments,
             attachments=attachments,
+            internal_notes=internal_notes,
             activity=activity,
             admins=admins,
         )
@@ -1024,6 +1142,26 @@ Comments:
             flash("Comment added.", "success")
         return redirect(url_for("ticket_detail", ticket_id=ticket_id))
 
+    @app.route("/tickets/<int:ticket_id>/internal-notes", methods=("POST",))
+    @admin_required
+    def add_internal_note(ticket_id):
+        validate_csrf()
+        ticket = get_ticket(ticket_id)
+        body = request.form.get("body", "").strip()
+        if not body:
+            flash("Internal note cannot be empty.", "error")
+        elif len(body) > MAX_COMMENT_LENGTH:
+            flash(f"Internal note must be {MAX_COMMENT_LENGTH} characters or fewer.", "error")
+        else:
+            execute(
+                "INSERT INTO internal_notes (ticket_id, user_id, body) VALUES (?, ?, ?)",
+                (ticket["id"], g.user["id"], body),
+            )
+            execute("UPDATE tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (ticket_id,))
+            log_action(ticket_id, "internal_note_added", "Internal note added")
+            flash("Internal note added.", "success")
+        return redirect(url_for("ticket_detail", ticket_id=ticket_id))
+
     @app.route("/tickets/<int:ticket_id>/assign", methods=("POST",))
     @admin_required
     def assign_ticket(ticket_id):
@@ -1111,6 +1249,7 @@ Comments:
         execute("DELETE FROM audit_log WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM attachments WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM comments WHERE ticket_id = ?", (ticket_id,))
+        execute("DELETE FROM internal_notes WHERE ticket_id = ?", (ticket_id,))
         execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
         flash("Ticket deleted.", "success")
         return redirect(url_for("dashboard"))

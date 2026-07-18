@@ -257,6 +257,15 @@ button,
   border-left: 3px solid #dc2626;
 }
 
+.ticket-sla-risk {
+  border-left: 3px solid #f59e0b;
+}
+
+.ticket-sla-breached {
+  border-left: 3px solid #dc2626;
+  background: #fff7ed;
+}
+
 .badge-overdue {
   background: #fee2e2;
   color: #dc2626;
@@ -264,6 +273,46 @@ button,
   padding: 0.1rem 0.4rem;
   border-radius: 4px;
   font-weight: bold;
+}
+
+.ticket-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.65rem 0;
+}
+
+.sla-badge {
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.sla-on_track {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.sla-at_risk {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.sla-breached {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.sla-resolved {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.sla-detail {
+  color: #64748b;
+  font-size: 0.86rem;
 }
 
 .chart-container {
@@ -321,6 +370,14 @@ button,
   color: #6b7280;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.metric-warning .metric-value {
+  color: #d97706;
+}
+
+.metric-danger .metric-value {
+  color: #dc2626;
 }
 
 .button-link {
@@ -621,6 +678,39 @@ button,
   border-bottom: 1px solid #e2e8f0;
 }
 
+.internal-notes-panel {
+  border-left: 4px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.internal-notes-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.internal-note {
+  padding: 0.9rem;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.internal-note-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.internal-note p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 700px) {
   .site-header,
   .toolbar,
@@ -628,6 +718,11 @@ button,
   .ticket-header,
   .grid-two {
     flex-direction: column;
+  }
+
+  .internal-note-header {
+    flex-direction: column;
+    gap: 0.2rem;
   }
 }
 

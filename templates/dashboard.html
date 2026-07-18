@@ -68,6 +68,14 @@
       <div class="metric-value">{{ category_stats|length }}</div>
       <div class="metric-label">Categories</div>
     </div>
+    <div class="metric metric-warning">
+      <div class="metric-value">{{ sla_counts.at_risk }}</div>
+      <div class="metric-label">SLA At Risk</div>
+    </div>
+    <div class="metric metric-danger">
+      <div class="metric-value">{{ sla_counts.breached }}</div>
+      <div class="metric-label">SLA Breached</div>
+    </div>
   </div>
 </section>
 
@@ -115,6 +123,14 @@
         {% endfor %}
       </select>
     </label>
+    <label>SLA
+      <select name="sla">
+        <option value="">All</option>
+        <option value="on_track" {% if sla == "on_track" %}selected{% endif %}>On track</option>
+        <option value="at_risk" {% if sla == "at_risk" %}selected{% endif %}>At risk</option>
+        <option value="breached" {% if sla == "breached" %}selected{% endif %}>Breached</option>
+      </select>
+    </label>
     <label>Search <input type="search" name="search" value="{{ search }}" placeholder="title, description"></label>
     <label>Sort
       <select name="sort">
@@ -134,10 +150,14 @@
   {% if tickets %}
     <div class="ticket-list">
       {% for ticket in tickets %}
-        <article class="ticket-row{% if ticket['due_date'] and ticket['due_date'] < today and ticket['status'] != 'closed' %} ticket-overdue{% endif %}">
+        <article class="ticket-row{% if ticket['due_date'] and ticket['due_date'] < today and ticket['status'] != 'closed' %} ticket-overdue{% endif %}{% if ticket['sla']['status'] == 'breached' %} ticket-sla-breached{% elif ticket['sla']['status'] == 'at_risk' %} ticket-sla-risk{% endif %}">
           <div>
             <h3><a href="{{ url_for('ticket_detail', ticket_id=ticket['id']) }}">{{ ticket["title"] }}</a></h3>
             <p>{{ ticket["description"] }}</p>
+            <div class="ticket-badges">
+              <span class="sla-badge sla-{{ ticket['sla']['status'] }}">{{ ticket['sla']['label'] }}</span>
+              <span class="sla-detail">{{ ticket['sla']['remaining'] }} · Deadline {{ ticket['sla']['deadline'] }} · Target {{ ticket['sla']['target_hours'] }}h</span>
+            </div>
             <p class="meta">
               Category: {{ ticket["category"] }} · Priority: {{ ticket["priority"] }} · Status: {{ ticket["status"] }}
               {% if g.user["role"] == "admin" %} · Owner: {{ ticket["owner_username"] }}{% endif %}
@@ -166,13 +186,13 @@
     {% if total_pages > 1 %}
       <nav class="pagination">
         {% if page > 1 %}
-          <a href="{{ url_for('dashboard', page=page-1, status=status, priority=priority, category=category, search=search, sort=sort) }}">&larr; Previous</a>
+          <a href="{{ url_for('dashboard', page=page-1, status=status, priority=priority, category=category, sla=sla, search=search, sort=sort) }}">&larr; Previous</a>
         {% else %}
           <span class="pagination-disabled">&larr; Previous</span>
         {% endif %}
         <span>Page {{ page }} of {{ total_pages }} &middot; {{ total }} ticket{{ 's' if total != 1 }}</span>
         {% if page < total_pages %}
-          <a href="{{ url_for('dashboard', page=page+1, status=status, priority=priority, category=category, search=search, sort=sort) }}">Next &rarr;</a>
+          <a href="{{ url_for('dashboard', page=page+1, status=status, priority=priority, category=category, sla=sla, search=search, sort=sort) }}">Next &rarr;</a>
         {% else %}
           <span class="pagination-disabled">Next &rarr;</span>
         {% endif %}

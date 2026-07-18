@@ -10,6 +10,10 @@
         {% if ticket["assignee_username"] %} · Assigned to: {{ ticket["assignee_username"] }}{% endif %}
         {% if ticket["due_date"] %} · Due: {{ ticket["due_date"] }}{% if ticket["due_date"] < today and ticket["status"] != "closed" %} <span class="badge-overdue">overdue</span>{% endif %}{% endif %}
       </p>
+      <div class="ticket-badges">
+        <span class="sla-badge sla-{{ ticket['sla']['status'] }}">{{ ticket['sla']['label'] }}</span>
+        <span class="sla-detail">{{ ticket['sla']['remaining'] }} · Deadline {{ ticket['sla']['deadline'] }} · Target {{ ticket['sla']['target_hours'] }}h</span>
+      </div>
     </div>
     <a class="button-link" href="{{ url_for('edit_ticket', ticket_id=ticket['id']) }}">Edit ticket</a>
   </div>
@@ -385,6 +389,44 @@ function closeAttachmentPreview() {
   attachmentModalImage.src = '';
 }
 </script>
+
+{% if g.user["role"] == "admin" %}
+<section class="card internal-notes-panel">
+  <div class="section-heading">
+    <div>
+      <h3>Internal Admin Notes</h3>
+      <p class="meta">Private troubleshooting notes visible only to admins.</p>
+    </div>
+    {% if internal_notes %}
+      <span class="attachment-count">{{ internal_notes|length }} note{{ '' if internal_notes|length == 1 else 's' }}</span>
+    {% endif %}
+  </div>
+
+  <form method="post" action="{{ url_for('add_internal_note', ticket_id=ticket['id']) }}" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Add private note
+      <textarea name="body" rows="4" maxlength="1000" required></textarea>
+    </label>
+    <button type="submit">Add internal note</button>
+  </form>
+
+  {% if internal_notes %}
+    <ul class="internal-notes-list">
+      {% for note in internal_notes %}
+        <li class="internal-note">
+          <div class="internal-note-header">
+            <strong>{{ note["username"] }}</strong>
+            <span class="meta">{{ note["created_at"] }}</span>
+          </div>
+          <p>{{ note["body"] }}</p>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="meta">No internal notes yet.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <section class="card">
   <h3>Comments</h3>
