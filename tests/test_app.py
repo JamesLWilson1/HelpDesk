@@ -1,4 +1,6 @@
 import os
+import hashlib
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -71,6 +73,27 @@ class HelpDeskAppTests(unittest.TestCase):
         db = sqlite3.connect(self.db_path)
         try:
             db.execute(query, tuple(params))
+            db.commit()
+        finally:
+            db.close()
+
+    def set_user_email(self, user_id, email):
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.execute("UPDATE users SET email = ? WHERE id = ?", (email, user_id))
+            db.commit()
+        finally:
+            db.close()
+
+    def insert_password_reset_token(self, user_id, token, expires_at=None):
+        expires_at = expires_at or datetime.utcnow() + timedelta(hours=1)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        db = sqlite3.connect(self.db_path)
+        try:
+            db.execute(
+                "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+                (user_id, token_hash, expires_at.strftime("%Y-%m-%d %H:%M:%S")),
+            )
             db.commit()
         finally:
             db.close()
@@ -570,6 +593,8 @@ class HelpDeskAppTests(unittest.TestCase):
     def test_admin_can_reset_user_password(self):
         self.register("admin-user")
         self.register("normal-user")
+        self.set_user_email(2, "normal@example.com")
+        self.app.config["MAIL_DEFAULT_SENDER"] = "helpdesk@example.com"
         self.login("admin-user")
         token = self.csrf_token("/admin/users")
         response = self.client.post(
@@ -577,7 +602,93 @@ class HelpDeskAppTests(unittest.TestCase):
             data={"csrf_token": token},
             follow_redirects=True,
         )
-        self.assertIn(b"reset to:", response.data)
+        self.assertIn(b"Password reset link sent to normal-user.", response.data)
+        self.assertNotIn(b"reset to:", response.data)
+
+        db = sqlite3.connect(self.db_path)
+        try:
+            count = db.execute("SELECT COUNT(*) FROM password_reset_tokens WHERE user_id = 2").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(count, 1)
+
+    def test_admin_password_reset_email_contains_one_time_link(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.set_user_email(2, "normal@example.com")
+        self.app.config["MAIL_DEFAULT_SENDER"] = "helpdesk@example.com"
+        self.app.config["MAIL_TEST_OUTBOX"] = []
+        self.login("admin-user")
+
+        token = self.csrf_token("/admin/users")
+        response = self.client.post(
+            "/admin/users/2/password",
+            data={"csrf_token": token},
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"Password reset link sent to normal-user.", response.data)
+        outbox = self.app.config["MAIL_TEST_OUTBOX"]
+        self.assertEqual(len(outbox), 1)
+        message = outbox[0]
+        self.assertEqual(message.subject, "[HelpDesk] Password reset link")
+        self.assertEqual(message.recipients, ["normal@example.com"])
+        self.assertIn("This link expires in 1 hour", message.body)
+
+        link_match = re.search(r"/reset-password/([^\s]+)", message.body)
+        self.assertIsNotNone(link_match)
+        reset_token = link_match.group(1)
+        token_hash = hashlib.sha256(reset_token.encode("utf-8")).hexdigest()
+
+        db = sqlite3.connect(self.db_path)
+        try:
+            stored = db.execute(
+                "SELECT token_hash FROM password_reset_tokens WHERE user_id = 2"
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(stored, token_hash)
+
+    def test_admin_password_reset_requires_email_configuration(self):
+        self.register("admin-user")
+        self.register("normal-user")
+        self.login("admin-user")
+
+        response = self.post("/admin/users/2/password", {}, csrf_path="/admin/users")
+
+        self.assertIn(b"Add an email address", response.data)
+
+    def test_password_reset_token_updates_password_once(self):
+        self.register("admin-user")
+        token = "valid-reset-token"
+        self.insert_password_reset_token(1, token)
+
+        csrf_token = self.csrf_token(f"/reset-password/{token}")
+        response = self.client.post(
+            f"/reset-password/{token}",
+            data={"csrf_token": csrf_token, "new_password": "newpass456"},
+            follow_redirects=True,
+        )
+
+        self.assertIn(b"Password updated", response.data)
+        response = self.login("admin-user", secret="newpass456")
+        self.assertIn(b"All tickets", response.data)
+
+        response = self.client.get(f"/reset-password/{token}", follow_redirects=True)
+        self.assertIn(b"invalid or expired", response.data)
+
+    def test_ticket_summary_route_is_rate_limited(self):
+        self.register("admin-user")
+        self.login("admin-user")
+        self.create_ticket("Rate limit summary")
+
+        first = self.client.get("/tickets/1/summary")
+        second = self.client.get("/tickets/1/summary")
+        third = self.client.get("/tickets/1/summary")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 429)
 
     def test_admin_cannot_delete_user_with_tickets(self):
         self.register("admin-user")
@@ -825,10 +936,12 @@ class HelpDeskAppTests(unittest.TestCase):
         self.register("alice")
         self.login("alice")
         self.create_ticket("Recent Ticket")
-        from datetime import datetime, timedelta
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        response = self.client.get(f"/search?created_from={yesterday}&created_to={today}")
+        db = sqlite3.connect(self.db_path)
+        try:
+            created_date = db.execute("SELECT DATE(created_at) FROM tickets WHERE id = 1").fetchone()[0]
+        finally:
+            db.close()
+        response = self.client.get(f"/search?created_from={created_date}&created_to={created_date}")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Recent Ticket", response.data)
 
@@ -1011,6 +1124,62 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertIn(b"notification-badge", response.data)
         self.assertIn(b">1<", response.data)  # Badge should show 1 unread
 
+    def test_session_cookie_security_defaults(self):
+        """App should default to safer session cookie settings."""
+        self.assertTrue(self.app.config["SESSION_COOKIE_HTTPONLY"])
+        self.assertEqual(self.app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+        self.assertFalse(self.app.config["SESSION_COOKIE_SECURE"])
+
+    def test_session_cookie_secure_defaults_to_true_in_production(self):
+        """Production environments should default to secure session cookies."""
+        previous_app_env = os.environ.get("APP_ENV")
+        previous_cookie_secure = os.environ.get("SESSION_COOKIE_SECURE")
+        os.environ["APP_ENV"] = "production"
+        os.environ.pop("SESSION_COOKIE_SECURE", None)
+        try:
+            production_app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test-secret",
+                    "DATABASE": os.path.join(self.temp_dir.name, "production-test.sqlite"),
+                }
+            )
+            self.assertTrue(production_app.config["SESSION_COOKIE_SECURE"])
+        finally:
+            if previous_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = previous_app_env
+            if previous_cookie_secure is None:
+                os.environ.pop("SESSION_COOKIE_SECURE", None)
+            else:
+                os.environ["SESSION_COOKIE_SECURE"] = previous_cookie_secure
+
+    def test_session_cookie_secure_env_override(self):
+        """Explicit SESSION_COOKIE_SECURE value should override environment default."""
+        previous_app_env = os.environ.get("APP_ENV")
+        previous_cookie_secure = os.environ.get("SESSION_COOKIE_SECURE")
+        os.environ["APP_ENV"] = "production"
+        os.environ["SESSION_COOKIE_SECURE"] = "false"
+        try:
+            override_app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test-secret",
+                    "DATABASE": os.path.join(self.temp_dir.name, "override-test.sqlite"),
+                }
+            )
+            self.assertFalse(override_app.config["SESSION_COOKIE_SECURE"])
+        finally:
+            if previous_app_env is None:
+                os.environ.pop("APP_ENV", None)
+            else:
+                os.environ["APP_ENV"] = previous_app_env
+            if previous_cookie_secure is None:
+                os.environ.pop("SESSION_COOKIE_SECURE", None)
+            else:
+                os.environ["SESSION_COOKIE_SECURE"] = previous_cookie_secure
+
     def test_notification_link_to_ticket(self):
         """Notifications should link to the relevant ticket."""
         self.register("admin1")  # First user becomes admin
@@ -1022,6 +1191,26 @@ class HelpDeskAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         # Should have link to ticket #1
         self.assertIn(b"/tickets/1", response.data)
+
+    def test_mark_notification_read_rejects_external_referrer_redirect(self):
+        """Mark-read should never redirect to external hosts from the Referer header."""
+        self.register("admin1")
+        self.register("user1")
+        self.login("user1")
+        self.create_ticket("Referrer Safety")
+        self.login("admin1")
+
+        token = self.csrf_token("/notifications")
+        response = self.client.post(
+            "/notifications/mark-read/1",
+            data={"csrf_token": token},
+            headers={"Referer": "https://evil.example/phish"},
+            follow_redirects=False,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/notifications", response.headers["Location"])
+        self.assertNotIn("evil.example", response.headers["Location"])
 
     # File upload enhancement tests
     def test_multiple_file_upload(self):

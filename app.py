@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import os
 import re
@@ -51,6 +52,17 @@ SORT_OPTIONS = {
 }
 
 
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def is_production_env():
+    return os.environ.get("APP_ENV", os.environ.get("FLASK_ENV", "")).lower() in {"prod", "production"}
+
+
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
@@ -63,6 +75,9 @@ def create_app(test_config=None):
         MAIL_PASSWORD=os.environ.get("MAIL_PASSWORD"),
         MAIL_DEFAULT_SENDER=os.environ.get("MAIL_DEFAULT_SENDER"),
         MAX_CONTENT_LENGTH=MAX_FILE_BYTES,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=env_flag("SESSION_COOKIE_SECURE", default=is_production_env()),
     )
 
     if test_config is not None:
@@ -182,6 +197,16 @@ def create_app(test_config=None):
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (created_by) REFERENCES users (id)
             );
+
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            );
             """
         )
         db.commit()
@@ -274,6 +299,32 @@ def create_app(test_config=None):
             except (TypeError, ValueError):
                 continue
         return datetime.utcnow()
+
+    def hash_reset_token(token):
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def create_password_reset_token(user_id):
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.utcnow() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        execute(
+            "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+            (user_id, hash_reset_token(token), expires_at),
+        )
+        return token
+
+    def get_valid_password_reset(token):
+        reset = query_one(
+            """
+            SELECT password_reset_tokens.*, users.username
+            FROM password_reset_tokens
+            JOIN users ON users.id = password_reset_tokens.user_id
+            WHERE password_reset_tokens.token_hash = ? AND password_reset_tokens.used_at IS NULL
+            """,
+            (hash_reset_token(token),),
+        )
+        if reset is None or parse_timestamp(reset["expires_at"]) < datetime.utcnow():
+            return None
+        return reset
 
     def sla_status_for_ticket(ticket, now=None):
         target_hours = SLA_TARGET_HOURS.get(ticket["priority"], SLA_TARGET_HOURS["medium"])
@@ -385,7 +436,7 @@ def create_app(test_config=None):
         ), code
 
     def send_notification(subject, recipients, body):
-        """Send an email in a background thread. No-ops if MAIL_DEFAULT_SENDER is not configured."""
+        """Send an email. No-ops if MAIL_DEFAULT_SENDER is not configured."""
         filtered = [r for r in recipients if r]
         if not app.config.get("MAIL_DEFAULT_SENDER") or not filtered:
             return
@@ -394,9 +445,17 @@ def create_app(test_config=None):
             with app.app_context():
                 try:
                     msg = Message(subject, recipients=filtered, body=body)
+                    test_outbox = app.config.get("MAIL_TEST_OUTBOX")
+                    if test_outbox is not None:
+                        test_outbox.append(msg)
+                        return
                     mail.send(msg)
                 except Exception:
                     pass
+
+        if app.config.get("TESTING"):
+            _send()
+            return
 
         threading.Thread(target=_send, daemon=True).start()
 
@@ -605,6 +664,33 @@ Comments:
                 rotate_csrf_token()
                 return redirect(url_for("dashboard"))
         return render_template("login.html")
+
+    @app.route("/reset-password/<token>", methods=("GET", "POST"))
+    @limiter.limit("5 per minute", methods=["POST"])
+    def reset_password(token):
+        reset = get_valid_password_reset(token)
+        if reset is None:
+            flash("Password reset link is invalid or expired.", "error")
+            return redirect(url_for("login"))
+
+        if request.method == "POST":
+            validate_csrf()
+            new_password = request.form.get("new_password", "")
+            if not new_password:
+                flash("New password is required.", "error")
+            else:
+                execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (generate_password_hash(new_password), reset["user_id"]),
+                )
+                execute(
+                    "UPDATE password_reset_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (reset["id"],),
+                )
+                flash("Password updated. You can now log in.", "success")
+                return redirect(url_for("login"))
+
+        return render_template("reset_password.html", token=token)
 
     @app.route("/logout", methods=("POST",))
     @login_required
@@ -1041,6 +1127,7 @@ Comments:
         
     @app.route("/tickets/<int:ticket_id>/summary")
     @login_required
+    @limiter.limit("2 per minute", methods=["GET"])
     def ticket_summary(ticket_id):
 
         ticket = get_ticket(ticket_id)
@@ -1389,12 +1476,23 @@ Comments:
         user = query_one("SELECT * FROM users WHERE id = ?", (user_id,))
         if user is None:
             abort(404)
-        new_password = secrets.token_urlsafe(12)
-        execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (generate_password_hash(new_password), user_id),
+        if not user["email"]:
+            flash(f"Add an email address for {user['username']} before sending a password reset link.", "error")
+            return redirect(url_for("admin_users"))
+        if not app.config.get("MAIL_DEFAULT_SENDER"):
+            flash("Password reset email is not configured.", "error")
+            return redirect(url_for("admin_users"))
+
+        token = create_password_reset_token(user_id)
+        reset_url = url_for("reset_password", token=token, _external=True)
+        send_notification(
+            "[HelpDesk] Password reset link",
+            [user["email"]],
+            f"A password reset was requested for your HelpDesk account.\n\n"
+            f"Reset your password: {reset_url}\n\n"
+            "This link expires in 1 hour and can only be used once.",
         )
-        flash(f"Password for {user['username']} reset to: {new_password}", "success")
+        flash(f"Password reset link sent to {user['username']}.", "success")
         return redirect(url_for("admin_users"))
 
     @app.route("/admin/users/<int:user_id>/delete", methods=("POST",))
@@ -1662,7 +1760,7 @@ Comments:
             "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
             (notification_id, g.user["id"])
         )
-        return redirect(request.referrer or url_for("notifications"))
+        return redirect(url_for("notifications"))
 
     @app.route("/notifications/mark-all-read", methods=("POST",))
     @login_required

@@ -37,6 +37,17 @@ The first registered account becomes an **admin** automatically so the system ca
 
 All later registrations become normal **users**.
 
+## Configuration
+
+Set these environment variables for production deployments:
+
+- `SECRET_KEY`: required stable secret for session signing.
+- `APP_ENV=production`: enables secure production defaults, including secure session cookies.
+- `SESSION_COOKIE_SECURE`: optional explicit override for secure session cookies. Defaults to `true` when `APP_ENV` or `FLASK_ENV` is `production`; defaults to `false` for local development.
+- `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_DEFAULT_SENDER`: required for email notifications and admin-triggered password reset links.
+
+Password reset links are one-time use, expire after 1 hour, and require the target user to have an email address.
+
 ## Main routes / API behavior
 
 This project is server-rendered HTML, but the main behaviors map cleanly to REST-style resources:

@@ -32,9 +32,9 @@
               </form>
 
               <form method="post" action="{{ url_for('admin_reset_password', user_id=user['id']) }}" style="display:inline"
-                    onsubmit="return confirm('Reset password for {{ user.username }}? A new temporary password will be shown once.')">
+                    onsubmit="return confirm('Send password reset link to {{ user.username }}?')">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit">Reset password</button>
+                <button type="submit">Send reset link</button>
               </form>
 
               <form method="post" action="{{ url_for('admin_delete_user', user_id=user['id']) }}" style="display:inline"
