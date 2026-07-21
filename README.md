@@ -8,7 +8,7 @@ HelpDesk is a small Flask + SQLite ticketing system with authentication, role-ba
 - Two roles:
   - **Admin**: can view all tickets, filter/search tickets, assign tickets, change status, and add resolution notes
   - **User**: can create tickets, view their own tickets, edit their own tickets, and comment on them
-- SQLite database with `users`, `tickets`, and `comments` tables
+- SQLite database with users, tickets, comments, notifications, templates, attachments, audit logs, and password reset tokens
 - Ticket fields for title, description, category, priority, status, assignment, and resolution notes
 - Dashboard with ticket statistics
 - Search and status filters
@@ -66,5 +66,5 @@ This project is server-rendered HTML, but the main behaviors map cleanly to REST
 ## Running tests
 
 ```bash
-python -m unittest discover -s tests -v
+python -m pytest -q
 ```
