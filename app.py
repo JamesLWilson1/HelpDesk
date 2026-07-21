@@ -63,6 +63,125 @@ def is_production_env():
     return os.environ.get("APP_ENV", os.environ.get("FLASK_ENV", "")).lower() in {"prod", "production"}
 
 
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+    email TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'closed')),
+    resolution_notes TEXT NOT NULL DEFAULT '',
+    user_id INTEGER NOT NULL,
+    assigned_to INTEGER,
+    due_date TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id),
+    FOREIGN KEY (assigned_to) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS internal_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    ticket_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    message TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id),
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL,
+    priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
+    default_title TEXT NOT NULL,
+    default_description TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users (id)
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id)
+);
+"""
+
+
+COLUMN_MIGRATIONS = (
+    "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE tickets ADD COLUMN due_date TEXT",
+    "ALTER TABLE users ADD COLUMN email_on_assign INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN email_on_comment INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN email_on_status INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE users ADD COLUMN email_on_new_ticket INTEGER NOT NULL DEFAULT 1",
+)
+
+
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
@@ -100,149 +219,14 @@ def create_app(test_config=None):
 
     def init_db():
         db = sqlite3.connect(app.config["DATABASE"])
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
-                email TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS tickets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL,
-                category TEXT NOT NULL,
-                priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
-                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'closed')),
-                resolution_notes TEXT NOT NULL DEFAULT '',
-                user_id INTEGER NOT NULL,
-                assigned_to INTEGER,
-                due_date TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (assigned_to) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS comments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                body TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS internal_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                body TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS attachments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                filename TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                action TEXT NOT NULL,
-                detail TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                ticket_id INTEGER NOT NULL,
-                type TEXT NOT NULL,
-                message TEXT NOT NULL,
-                is_read INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (ticket_id) REFERENCES tickets (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS ticket_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL,
-                priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
-                default_title TEXT NOT NULL,
-                default_description TEXT NOT NULL,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                created_by INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (created_by) REFERENCES users (id)
-            );
-
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                token_hash TEXT NOT NULL UNIQUE,
-                expires_at TEXT NOT NULL,
-                used_at TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            );
-            """
-        )
+        db.executescript(SCHEMA_SQL)
         db.commit()
-        # Migrate: add email column to existing databases
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
-        # Migrate: add due_date column to existing databases
-        try:
-            db.execute("ALTER TABLE tickets ADD COLUMN due_date TEXT")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass  # column already exists
-        # Migrate: add email preference columns
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN email_on_assign INTEGER NOT NULL DEFAULT 1")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN email_on_comment INTEGER NOT NULL DEFAULT 1")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN email_on_status INTEGER NOT NULL DEFAULT 1")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN email_on_new_ticket INTEGER NOT NULL DEFAULT 1")
-            db.commit()
-        except sqlite3.OperationalError:
-            pass
+        for migration in COLUMN_MIGRATIONS:
+            try:
+                db.execute(migration)
+                db.commit()
+            except sqlite3.OperationalError:
+                pass
         db.close()
 
     def query_one(query, params=()):

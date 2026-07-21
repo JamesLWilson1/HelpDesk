@@ -23,13 +23,15 @@ HelpDesk is a small Flask + SQLite ticketing system with authentication, role-ba
    pip install -r requirements.txt
    ```
 
-3. Run the app:
+3. Copy `.env.example` to `.env` and fill in any local settings you need.
+
+4. Run the app:
 
    ```bash
    python app.py
    ```
 
-4. Open `http://127.0.0.1:5000`.
+5. Open `http://127.0.0.1:5000`.
 
 ## First account bootstrap
 
@@ -47,6 +49,8 @@ Set these environment variables for production deployments:
 - `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_DEFAULT_SENDER`: required for email notifications and admin-triggered password reset links.
 
 Password reset links are one-time use, expire after 1 hour, and require the target user to have an email address.
+
+Use `.env.example` as the starting template for local and deployment configuration. Do not commit your real `.env` file.
 
 ## Main routes / API behavior
 

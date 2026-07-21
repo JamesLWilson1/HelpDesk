@@ -1180,6 +1180,57 @@ class HelpDeskAppTests(unittest.TestCase):
             else:
                 os.environ["SESSION_COOKIE_SECURE"] = previous_cookie_secure
 
+    def test_existing_database_gets_column_migrations(self):
+        legacy_db_path = os.path.join(self.temp_dir.name, "legacy.sqlite")
+        db = sqlite3.connect(legacy_db_path)
+        try:
+            db.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE tickets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    priority TEXT NOT NULL CHECK (priority IN ('low', 'medium', 'high')),
+                    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'in_progress', 'closed')),
+                    resolution_notes TEXT NOT NULL DEFAULT '',
+                    user_id INTEGER NOT NULL,
+                    assigned_to INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": legacy_db_path,
+            }
+        )
+
+        db = sqlite3.connect(legacy_db_path)
+        try:
+            user_columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+            ticket_columns = {row[1] for row in db.execute("PRAGMA table_info(tickets)")}
+        finally:
+            db.close()
+
+        self.assertTrue({"email", "email_on_assign", "email_on_comment", "email_on_status", "email_on_new_ticket"}.issubset(user_columns))
+        self.assertIn("due_date", ticket_columns)
+
     def test_notification_link_to_ticket(self):
         """Notifications should link to the relevant ticket."""
         self.register("admin1")  # First user becomes admin
