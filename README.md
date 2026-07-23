@@ -52,6 +52,50 @@ Password reset links are one-time use, expire after 1 hour, and require the targ
 
 Use `.env.example` as the starting template for local and deployment configuration. Do not commit your real `.env` file.
 
+## Deployment checklist
+
+Before deploying, confirm these production settings are in place:
+
+- Set a long, stable `SECRET_KEY`. If this changes between restarts, existing login sessions and CSRF tokens become invalid.
+- Set `APP_ENV=production` so secure cookie defaults are enabled.
+- Keep `SESSION_COOKIE_SECURE=true` when the site is served over HTTPS. Only override it for local HTTP testing.
+- Configure SMTP with `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`, `MAIL_USERNAME`, `MAIL_PASSWORD`, and `MAIL_DEFAULT_SENDER`. Password reset links and email notifications depend on working mail delivery.
+- Keep `.env` out of version control. Use `.env.example` as the safe template.
+- Persist and back up the `instance/` directory. The default SQLite database is `instance/helpdesk.sqlite`, and uploaded ticket files are stored under `instance/uploads/`.
+- Put the app behind HTTPS in production. A reverse proxy such as Nginx, Caddy, or a platform-managed load balancer can terminate TLS before forwarding traffic to Gunicorn.
+- Run database backups before deploying schema changes. The app applies lightweight SQLite column migrations at startup, but backups are still the rollback plan.
+
+## Docker deployment
+
+Build the image:
+
+```bash
+docker build -t helpdesk .
+```
+
+Run it with a persisted instance volume and production environment file:
+
+```bash
+docker run --rm \
+   --name helpdesk \
+   --env-file .env \
+   -p 8000:8000 \
+   -v helpdesk-instance:/app/instance \
+   helpdesk
+```
+
+Then serve `http://127.0.0.1:8000` behind your production HTTPS proxy.
+
+The Dockerfile intentionally runs Gunicorn with one worker because this project currently uses SQLite and Flask-Limiter's in-memory rate-limit storage. To scale beyond one worker or one container, move the database to Postgres and use a shared rate-limit backend such as Redis.
+
+## Operational notes
+
+- The first registered account becomes the admin account. Register it immediately after first deployment, then create normal users from the app.
+- Monitor application logs for SMTP failures, rate-limit warnings, and unexpected 4xx/5xx responses.
+- Keep `OPENAI_API_KEY` unset unless AI ticket summaries are needed. If enabled, monitor usage because summary generation calls the OpenAI API.
+- Test password reset delivery after configuring SMTP by using the admin user's `Send reset link` action for a user with an email address.
+- Periodically verify backups by restoring `instance/helpdesk.sqlite` and `instance/uploads/` into a staging environment.
+
 ## Main routes / API behavior
 
 This project is server-rendered HTML, but the main behaviors map cleanly to REST-style resources:
